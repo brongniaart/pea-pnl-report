@@ -1,0 +1,18 @@
+{
+  "_comment": "Copiez ce fichier en portfolio.json puis remplacez par VOS valeurs. Le ticker est le symbole Yahoo Finance (suffixe .PA pour Euronext Paris). qte = nombre de titres, pru = prix de revient unitaire (prix d'achat moyen, frais inclus). cat = catégorie libre pour le graphe de répartition.",
+  "portfolio": [
+    {"nom": "Amundi MSCI World (CW8)", "ticker": "CW8.PA",  "qte": 10, "pru": 500.00, "cat": "ETF MSCI World"},
+    {"nom": "Amundi Nasdaq-100 (PUST)", "ticker": "PUST.PA", "qte": 50, "pru": 70.00,  "cat": "ETF Nasdaq-100"},
+    {"nom": "TotalEnergies (TTE)",      "ticker": "TTE.PA",  "qte": 20, "pru": 55.00,  "cat": "Actions FR"},
+    {"nom": "LVMH (MC)",                "ticker": "MC.PA",   "qte": 2,  "pru": 650.00, "cat": "Actions FR"}
+  ],
+  "pee": {
+    "nom": "FCPE Actions Monde",
+    "parts": 25.0,
+    "pru": 150.00,
+    "vl_last": 165.00,
+    "vl_j2": 164.50,
+    "vl_date": "01/01/2026",
+    "disponibilite": "01/01/2030"
+  }
+}

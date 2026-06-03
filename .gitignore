@@ -1,0 +1,10 @@
+# Aperçus générés localement
+preview_note.html
+preview_report.pdf
+*.pdf
+
+# Outils / éditeurs
+.claude/
+__pycache__/
+*.pyc
+.DS_Store

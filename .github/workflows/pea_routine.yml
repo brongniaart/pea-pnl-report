@@ -1,0 +1,56 @@
+name: PEA P&L — Rapport quotidien
+
+on:
+  schedule:
+    - cron: '30 15 * * 1-5' # 17h30 Paris (UTC+2 été) — clôture Euronext
+  workflow_dispatch:          # bouton "Run workflow" manuel dans GitHub
+  repository_dispatch:        # déclenchement externe (ex: cron-job.org via API)
+    types: [run-pea]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: write   # nécessaire pour committer history.csv en retour
+
+jobs:
+  envoyer-rapport:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout du repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Installer les dépendances système (WeasyPrint)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libpango-1.0-0 libpangoft2-1.0-0 libcairo2 libgdk-pixbuf2.0-0 libffi-dev
+
+      - name: Installer les dépendances Python
+        run: pip install yfinance weasyprint anthropic --quiet
+
+      - name: Lancer le script P&L
+        env:
+          GMAIL_USER:        ${{ secrets.GMAIL_USER }}
+          GMAIL_PASSWORD:    ${{ secrets.GMAIL_PASSWORD }}
+          GMAIL_DEST:        ${{ secrets.GMAIL_DEST }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python pea_routine.py
+
+      - name: Persister l'historique (history.csv)
+        if: always()
+        run: |
+          if [[ -n "$(git status --porcelain history.csv)" ]]; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add history.csv
+            git commit -m "chore: maj history.csv [skip ci]"
+            git push
+          else
+            echo "Pas de changement dans history.csv"
+          fi

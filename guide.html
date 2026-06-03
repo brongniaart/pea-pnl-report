@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rapport P&L PEA automatisé · Guide d'installation</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --ink:#0f172a; --ink2:#334155; --mut:#64748b; --line:#e2e8f0;
+    --bg:#f1f5f9; --card:#ffffff;
+    --teal:#0d9488; --teal-d:#0f766e; --teal-l:#f0fdfa; --teal-b:#ccfbf1;
+    --green:#16a34a; --green-l:#f0fdf4; --green-b:#dcfce7;
+    --amber:#d97706; --amber-l:#fffbeb; --amber-b:#fde68a;
+    --red:#dc2626;
+    --code-bg:#0f172a; --code-ink:#e2e8f0;
+  }
+  body{background:var(--bg);font-family:'Inter',-apple-system,sans-serif;color:var(--ink);line-height:1.65;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:880px;margin:0 auto;padding:0 20px}
+  a{color:var(--teal-d);text-decoration:none;font-weight:600}
+  a:hover{text-decoration:underline}
+  code{font-family:'JetBrains Mono',monospace;font-size:.9em;background:#eef2f7;color:#0f766e;padding:2px 6px;border-radius:5px;font-weight:500}
+
+  /* ── HERO ── */
+  .hero{background:linear-gradient(160deg,#0f172a 0%,#134e4a 100%);color:#fff;padding:70px 0 64px;text-align:center;position:relative;overflow:hidden}
+  .hero::after{content:"";position:absolute;inset:0;background:radial-gradient(circle at 80% -10%,rgba(45,212,191,.25),transparent 55%);pointer-events:none}
+  .hero .wrap{position:relative}
+  .badge-pill{display:inline-block;font-size:12px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;color:#5eead4;background:rgba(45,212,191,.12);border:1px solid rgba(45,212,191,.3);padding:6px 16px;border-radius:30px;margin-bottom:22px}
+  .hero h1{font-size:46px;font-weight:800;letter-spacing:-1.2px;line-height:1.1;margin-bottom:18px}
+  .hero h1 .accent{background:linear-gradient(90deg,#2dd4bf,#4ade80);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+  .hero p{font-size:18px;color:#cbd5e1;max-width:620px;margin:0 auto 12px}
+  .hero .meta{font-size:14px;color:#94a3b8;margin-top:26px}
+  .hero .meta b{color:#5eead4}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:30px}
+  .chip{font-size:13px;font-weight:600;color:#e2e8f0;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.12);padding:8px 14px;border-radius:8px}
+
+  /* ── SECTION ── */
+  section{padding:52px 0}
+  .sec-tag{font-size:12px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--teal);margin-bottom:10px}
+  h2{font-size:30px;font-weight:800;letter-spacing:-.6px;margin-bottom:10px}
+  h2 .num{display:inline-flex;align-items:center;justify-content:center;width:42px;height:42px;background:var(--ink);color:#fff;border-radius:12px;font-size:20px;margin-right:14px;vertical-align:middle}
+  .lead{font-size:17px;color:var(--ink2);margin-bottom:26px;max-width:680px}
+
+  /* ── FEATURE GRID ── */
+  .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}
+  .feat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px}
+  .feat .ico{font-size:24px;margin-bottom:10px}
+  .feat h3{font-size:16px;font-weight:700;margin-bottom:5px}
+  .feat p{font-size:14px;color:var(--mut)}
+
+  /* ── STEP CARD ── */
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:28px 30px;margin-bottom:18px;box-shadow:0 1px 2px rgba(15,23,42,.04)}
+  .card h3{font-size:19px;font-weight:700;margin-bottom:8px}
+  .card p{color:var(--ink2);margin-bottom:14px}
+  .card p:last-child{margin-bottom:0}
+  ol.steps{counter-reset:s;list-style:none;margin:8px 0}
+  ol.steps>li{counter-increment:s;position:relative;padding-left:42px;margin-bottom:16px;color:var(--ink2)}
+  ol.steps>li::before{content:counter(s);position:absolute;left:0;top:-2px;width:28px;height:28px;background:var(--teal-l);color:var(--teal-d);border:1px solid var(--teal-b);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700}
+  ol.steps>li b{color:var(--ink)}
+  ul.bul{list-style:none;margin:8px 0}
+  ul.bul>li{position:relative;padding-left:24px;margin-bottom:9px;color:var(--ink2)}
+  ul.bul>li::before{content:"";position:absolute;left:4px;top:10px;width:7px;height:7px;background:var(--teal);border-radius:50%}
+
+  /* ── CODE BLOCK ── */
+  pre{background:var(--code-bg);color:var(--code-ink);border-radius:12px;padding:18px 20px;overflow-x:auto;margin:14px 0;font-family:'JetBrains Mono',monospace;font-size:13.5px;line-height:1.7}
+  pre .c{color:#64748b}
+  pre .k{color:#5eead4}
+  pre .s{color:#fcd34d}
+  pre code{background:none;color:inherit;padding:0;font-weight:400}
+
+  /* ── CALLOUTS ── */
+  .note{border-radius:12px;padding:16px 20px;margin:16px 0;font-size:14.5px;display:flex;gap:12px;align-items:flex-start}
+  .note .ni{font-size:18px;line-height:1.4;flex-shrink:0}
+  .note.tip{background:var(--green-l);border:1px solid var(--green-b);color:#166534}
+  .note.warn{background:var(--amber-l);border:1px solid var(--amber-b);color:#92400e}
+  .note.info{background:var(--teal-l);border:1px solid var(--teal-b);color:var(--teal-d)}
+  .note b{font-weight:700}
+
+  /* ── TABLE ── */
+  .tbl{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px;background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  .tbl th{background:#f8fafc;text-align:left;padding:11px 16px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--mut);border-bottom:1px solid var(--line)}
+  .tbl td{padding:11px 16px;border-bottom:1px solid var(--line);color:var(--ink2);vertical-align:top}
+  .tbl tr:last-child td{border-bottom:none}
+  .tbl td code{white-space:nowrap}
+
+  /* ── FAQ ── */
+  details{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:0;margin-bottom:10px;overflow:hidden}
+  summary{padding:16px 20px;font-weight:600;cursor:pointer;list-style:none;font-size:15.5px;display:flex;justify-content:space-between;align-items:center}
+  summary::-webkit-details-marker{display:none}
+  summary::after{content:"+";color:var(--teal);font-size:22px;font-weight:400}
+  details[open] summary::after{content:"−"}
+  details .ans{padding:0 20px 18px;color:var(--ink2);font-size:14.5px}
+
+  /* ── DIVIDER LABEL ── */
+  .opt{display:inline-block;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;background:#f1f5f9;color:var(--mut);border:1px solid var(--line);padding:3px 10px;border-radius:20px;margin-left:10px;vertical-align:middle}
+
+  footer{background:#0f172a;color:#94a3b8;text-align:center;padding:40px 20px;font-size:13.5px}
+  footer b{color:#5eead4}
+
+  @media(max-width:680px){
+    .hero h1{font-size:34px}.grid{grid-template-columns:1fr}
+    h2{font-size:24px}h2 .num{width:36px;height:36px;font-size:17px}
+  }
+</style>
+</head>
+<body>
+
+<!-- ════════════════ HERO ════════════════ -->
+<div class="hero">
+  <div class="wrap">
+    <span class="badge-pill">100 % gratuit · sans serveur · sans code</span>
+    <h1>Recevez chaque jour le <span class="accent">P&amp;L de votre PEA</span><br>par email, automatiquement</h1>
+    <p>Un rapport quotidien élégant de votre portefeuille boursier - valorisation, gains/pertes, graphiques, PDF joint - et une note de marché rédigée par une IA le vendredi.</p>
+    <p>Mis en place en <b style="color:#fff">15 minutes</b>, hébergé gratuitement par GitHub. Aucune carte bancaire, aucun serveur à gérer.</p>
+    <div class="chips">
+      <span class="chip">📊 P&amp;L jour / semaine / mois / YTD</span>
+      <span class="chip">📈 Courbe d'évolution</span>
+      <span class="chip">🤖 Note de marché IA (vendredi)</span>
+      <span class="chip">📄 PDF en pièce jointe</span>
+      <span class="chip">📧 Email auto</span>
+    </div>
+    <div class="meta">Stack : <b>GitHub Actions</b> · <b>Python</b> · <b>Yahoo Finance</b> · <b>Gmail</b> · <b>Claude</b></div>
+  </div>
+</div>
+
+<!-- ════════════════ CE QUE VOUS RECEVEZ ════════════════ -->
+<section>
+  <div class="wrap">
+    <div class="sec-tag">Aperçu</div>
+    <h2>Ce que vous allez recevoir</h2>
+    <p class="lead">Chaque jour de bourse, à la clôture, un email soigné atterrit dans votre boîte. Voici ce qu'il contient :</p>
+    <div class="grid">
+      <div class="feat"><div class="ico">💶</div><h3>Valorisation & P&amp;L</h3><p>Montant total, gain/perte du jour et depuis l'achat, en euros et en %.</p></div>
+      <div class="feat"><div class="ico">⏱️</div><h3>Toutes les périodes</h3><p>Performance jour, semaine, mois, depuis le 1ᵉʳ janvier et depuis l'ouverture de chaque position.</p></div>
+      <div class="feat"><div class="ico">🥧</div><h3>Répartition</h3><p>Graphe en barres de la répartition de votre portefeuille par catégorie (ETF, actions…).</p></div>
+      <div class="feat"><div class="ico">📈</div><h3>Courbe d'évolution</h3><p>L'historique de votre valorisation totale, enregistré et tracé automatiquement.</p></div>
+      <div class="feat"><div class="ico">🤖</div><h3>Note de marché IA</h3><p>Le vendredi, Claude analyse l'actualité de vos titres et rédige une note (micro / macro / perspective).</p></div>
+      <div class="feat"><div class="ico">📄</div><h3>PDF + version texte</h3><p>Le rapport est joint en PDF, avec un repli texte pour tous les clients mail.</p></div>
+    </div>
+    <div class="note info"><span class="ni">💡</span><div>Le projet gère un <b>PEA</b> (actions / ETF) et, en option, un <b>PEE</b> (épargne salariale). Le <b>PEE est facultatif</b> : si vous n'en avez pas, mettez simplement <code>"pee": {}</code> dans <code>portfolio.json</code> et tout le bloc PEE disparaît du rapport, qui n'affiche alors que le PEA. À l'inverse, remplissez la section <code>pee</code> (nom du fonds, parts, VL, date de déblocage) pour le voir apparaître.</div></div>
+  </div>
+</section>
+
+<!-- ════════════════ PRÉREQUIS ════════════════ -->
+<section style="background:#fff;border-top:1px solid var(--line);border-bottom:1px solid var(--line)">
+  <div class="wrap">
+    <div class="sec-tag">Avant de commencer</div>
+    <h2>Les 3 prérequis</h2>
+    <p class="lead">Aucune compétence technique requise. Il vous faut simplement créer (gratuitement) jusqu'à trois comptes :</p>
+    <table class="tbl">
+      <tr><th>Compte</th><th>Pour quoi</th><th>Obligatoire ?</th></tr>
+      <tr><td><b>GitHub</b><br><a href="https://github.com/signup">github.com/signup</a></td><td>Héberge et exécute le robot gratuitement (GitHub Actions).</td><td><b style="color:var(--green)">Oui</b></td></tr>
+      <tr><td><b>Gmail</b><br><a href="https://accounts.google.com">accounts.google.com</a></td><td>Envoie l'email du rapport. Un Gmail dédié est recommandé.</td><td><b style="color:var(--green)">Oui</b></td></tr>
+      <tr><td><b>Anthropic</b><br><a href="https://console.anthropic.com">console.anthropic.com</a></td><td>Génère la note de marché IA du vendredi (≈ 0,10-0,15 € par note, soit ~5 à 8 € / an).</td><td><b style="color:var(--mut)">Optionnel</b></td></tr>
+    </table>
+    <div class="note tip"><span class="ni">✅</span><div>Sans clé Anthropic, tout fonctionne - vous n'aurez simplement pas la note de marché du vendredi.</div></div>
+  </div>
+</section>
+
+<!-- ════════════════ ÉTAPE 1 - FORK ════════════════ -->
+<section>
+  <div class="wrap">
+    <div class="sec-tag">Installation</div>
+    <h2><span class="num">1</span>Copier le projet sur votre GitHub</h2>
+    <p class="lead">Le code est public. Vous allez en créer votre propre copie (un « fork »).</p>
+    <div class="card">
+      <ol class="steps">
+        <li>Connectez-vous à <a href="https://github.com">GitHub</a>.</li>
+        <li>Ouvrez la page de <b>ce dépôt</b> sur GitHub (celui qui contient ce guide).</li>
+        <li>En haut à droite, cliquez sur <b>Fork</b>, puis <b>Create fork</b>.</li>
+        <li>Vous obtenez votre copie à l'adresse <code>github.com/VOTRE-PSEUDO/&lt;nom-du-depot&gt;</code>.</li>
+      </ol>
+    </div>
+    <div class="note warn"><span class="ni">🔒</span><div><b>Confidentialité :</b> votre fichier de positions (<code>portfolio.json</code>) contient vos montants réels. Si le dépôt est <b>public</b>, ils sont visibles de tous. Pour les garder privés, créez plutôt un dépôt <b>privé</b> : les minutes GitHub Actions y restent gratuites pour un usage personnel. <span class="opt">recommandé</span></div></div>
+  </div>
+</section>
+
+<!-- ════════════════ ÉTAPE 2 - PORTFOLIO ════════════════ -->
+<section style="background:#fff;border-top:1px solid var(--line);border-bottom:1px solid var(--line)">
+  <div class="wrap">
+    <h2><span class="num">2</span>Renseigner votre portefeuille</h2>
+    <p class="lead">Tout se passe dans un seul fichier : <code>portfolio.json</code>. Partez du modèle fourni <code>portfolio.example.json</code>.</p>
+    <div class="card">
+      <h3>Comment éditer un fichier directement sur GitHub</h3>
+      <ol class="steps">
+        <li>Dans votre dépôt, ouvrez <code>portfolio.example.json</code>, cliquez sur l'icône <b>crayon ✏️</b> (« Edit »).</li>
+        <li>Copiez tout le contenu, revenez à la racine, créez un nouveau fichier nommé <b><code>portfolio.json</code></b> (bouton <b>Add file → Create new file</b>), collez, puis adaptez.</li>
+        <li>En bas, cliquez sur <b>Commit changes</b>.</li>
+      </ol>
+    </div>
+    <div class="card">
+      <h3>Le format expliqué</h3>
+      <pre><code><span class="c">// portfolio.json</span>
+{
+  <span class="k">"portfolio"</span>: [
+    {<span class="k">"nom"</span>: <span class="s">"Amundi MSCI World (CW8)"</span>, <span class="k">"ticker"</span>: <span class="s">"CW8.PA"</span>,  <span class="k">"qte"</span>: 10, <span class="k">"pru"</span>: 500.00, <span class="k">"cat"</span>: <span class="s">"ETF MSCI World"</span>},
+    {<span class="k">"nom"</span>: <span class="s">"TotalEnergies (TTE)"</span>,      <span class="k">"ticker"</span>: <span class="s">"TTE.PA"</span>,  <span class="k">"qte"</span>: 20, <span class="k">"pru"</span>: 55.00,  <span class="k">"cat"</span>: <span class="s">"Actions FR"</span>}
+  ],
+  <span class="k">"pee"</span>: {
+    <span class="k">"parts"</span>: 25.0, <span class="k">"pru"</span>: 150.00, <span class="k">"vl_last"</span>: 165.00, <span class="k">"vl_j2"</span>: 164.50,
+    <span class="k">"vl_date"</span>: <span class="s">"01/01/2026"</span>, <span class="k">"disponibilite"</span>: <span class="s">"01/01/2030"</span>
+  }
+}</code></pre>
+      <table class="tbl">
+        <tr><th>Champ</th><th>Signification</th></tr>
+        <tr><td><code>nom</code></td><td>Libellé affiché dans le rapport (texte libre).</td></tr>
+        <tr><td><code>ticker</code></td><td>Symbole <b>Yahoo Finance</b>. Pour Euronext Paris, suffixe <code>.PA</code> (ex : <code>TTE.PA</code>). Cherchez sur <a href="https://finance.yahoo.com">finance.yahoo.com</a>.</td></tr>
+        <tr><td><code>qte</code></td><td>Nombre de titres détenus.</td></tr>
+        <tr><td><code>pru</code></td><td>Prix de Revient Unitaire = votre prix d'achat moyen par titre (frais inclus).</td></tr>
+        <tr><td><code>cat</code></td><td>Catégorie pour le graphe de répartition (texte libre, ex : <code>ETF Nasdaq-100</code>, <code>Actions FR</code>).</td></tr>
+      </table>
+      <div class="note info"><span class="ni">ℹ️</span><div>Le bloc <code>pee</code> est pour l'épargne salariale (fonds à valeur liquidative). Si vous n'avez pas de PEE, laissez l'exemple tel quel ou mettez de petites valeurs - il s'affichera mais sans impact.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════ ÉTAPE 3 - GMAIL ════════════════ -->
+<section>
+  <div class="wrap">
+    <h2><span class="num">3</span>Créer un mot de passe d'application Gmail</h2>
+    <p class="lead">Pour qu'un robot envoie un email via votre Gmail, Google exige un « mot de passe d'application » dédié (différent de votre mot de passe habituel).</p>
+    <div class="card">
+      <ol class="steps">
+        <li>Activez d'abord la <b>validation en 2 étapes</b> sur votre compte : <a href="https://myaccount.google.com/security">myaccount.google.com/security</a> (obligatoire pour l'étape suivante).</li>
+        <li>Allez sur <a href="https://myaccount.google.com/apppasswords">myaccount.google.com/apppasswords</a>.</li>
+        <li>Donnez un nom (ex : <code>PEA Routine</code>) et cliquez sur <b>Créer</b>.</li>
+        <li>Google affiche un code de <b>16 lettres</b> (ex : <code>abcd efgh ijkl mnop</code>). <b>Copiez-le sans les espaces</b> → <code>abcdefghijklmnop</code>.</li>
+      </ol>
+      <div class="note warn"><span class="ni">⚠️</span><div>Ce code ne s'affiche qu'<b>une seule fois</b>. Gardez-le de côté pour l'étape 4. Ce n'est <b>pas</b> votre mot de passe Gmail habituel.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════ ÉTAPE 4 - SECRETS ════════════════ -->
+<section style="background:#fff;border-top:1px solid var(--line);border-bottom:1px solid var(--line)">
+  <div class="wrap">
+    <h2><span class="num">4</span>Enregistrer vos identifiants en sécurité</h2>
+    <p class="lead">Les mots de passe ne se mettent <b>jamais</b> dans le code. GitHub propose un coffre-fort : les « Secrets ».</p>
+    <div class="card">
+      <ol class="steps">
+        <li>Dans <b>votre fork</b>, allez dans <b>Settings</b> (onglet du dépôt, pas celui du compte).</li>
+        <li>Menu de gauche : <b>Secrets and variables → Actions</b>.</li>
+        <li>Cliquez sur <b>New repository secret</b> et ajoutez ces secrets un par un :</li>
+      </ol>
+      <table class="tbl">
+        <tr><th>Nom du secret</th><th>Valeur</th></tr>
+        <tr><td><code>GMAIL_USER</code></td><td>Votre adresse Gmail expéditrice, ex : <code>monrobot@gmail.com</code></td></tr>
+        <tr><td><code>GMAIL_PASSWORD</code></td><td>Le mot de passe d'application à 16 lettres (sans espaces) de l'étape 3.</td></tr>
+        <tr><td><code>GMAIL_DEST</code></td><td>L'adresse qui <b>reçoit</b> le rapport (peut être la même).</td></tr>
+        <tr><td><code>ANTHROPIC_API_KEY</code> <span class="opt">optionnel</span></td><td>Votre clé API Anthropic (voir étape 5).</td></tr>
+      </table>
+      <div class="note tip"><span class="ni">🔐</span><div>Les secrets sont chiffrés et invisibles, même pour vous, une fois enregistrés. C'est l'endroit sûr pour ce genre d'informations.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════ ÉTAPE 5 - ANTHROPIC ════════════════ -->
+<section>
+  <div class="wrap">
+    <h2><span class="num">5</span>Activer la note de marché IA <span class="opt">optionnel</span></h2>
+    <p class="lead">Le vendredi, le projet peut demander à Claude d'analyser l'actualité de vos titres et de rédiger une note. Pour cela, il faut une clé API Anthropic.</p>
+    <div class="card">
+      <ol class="steps">
+        <li>Créez un compte sur <a href="https://console.anthropic.com">console.anthropic.com</a>.</li>
+        <li>Ajoutez un petit crédit (5 € suffisent pour ~1 an). Chaque note coûte ≈ 0,10 à 0,15 €, soit environ <b>5 à 8 € par an</b> pour 1 note par semaine.</li>
+        <li>Dans <b>API Keys</b>, créez une clé (commence par <code>sk-ant-...</code>) et copiez-la.</li>
+        <li>Ajoutez-la dans les Secrets GitHub (étape 4) sous le nom <code>ANTHROPIC_API_KEY</code>.</li>
+      </ol>
+      <div class="note info"><span class="ni">💸</span><div><b>Détail du coût</b> (modèle Claude Sonnet) : ~2 000 tokens générés (≈ 0,03 €) + le contexte et les 3 recherches web facturées (≈ 0,03 € chacune au maximum). Au total <b>≈ 0,10 à 0,15 € par note</b>. Comme elle n'est produite qu'<b>une fois par semaine</b> (vendredi à la clôture), cela représente <b>~5 à 8 € par an</b> - prévisible, et plafonné par votre crédit Anthropic.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════ ÉTAPE 6 - ACTIVER & TESTER ════════════════ -->
+<section style="background:#fff;border-top:1px solid var(--line);border-bottom:1px solid var(--line)">
+  <div class="wrap">
+    <h2><span class="num">6</span>Activer le robot et tester</h2>
+    <p class="lead">Le robot est piloté par « GitHub Actions ». On l'active, puis on lance un premier rapport à la demande.</p>
+    <div class="card">
+      <h3>Activer les Actions</h3>
+      <ol class="steps">
+        <li>Dans votre fork, ouvrez l'onglet <b>Actions</b>.</li>
+        <li>GitHub désactive les Actions sur les forks par sécurité : cliquez sur <b>« I understand my workflows, go ahead and enable them »</b>.</li>
+      </ol>
+    </div>
+    <div class="card">
+      <h3>Lancer un rapport tout de suite (test)</h3>
+      <ol class="steps">
+        <li>Onglet <b>Actions</b> → dans la liste de gauche, sélectionnez <b>« PEA P&amp;L - Rapport quotidien »</b>.</li>
+        <li>Cliquez sur <b>Run workflow</b> (à droite) → <b>Run workflow</b>.</li>
+        <li>Après ~1 minute, le job passe au vert ✅ et l'email arrive dans la boîte <code>GMAIL_DEST</code>.</li>
+      </ol>
+      <div class="note warn"><span class="ni">🔎</span><div>Si le job échoue (croix rouge), cliquez dessus pour lire les logs. Causes fréquentes : mot de passe d'application erroné, ticker Yahoo introuvable, ou validation 2 étapes Gmail non activée.</div></div>
+    </div>
+    <div class="card">
+      <h3>L'envoi automatique quotidien</h3>
+      <p>C'est déjà configuré ! Le fichier <code>.github/workflows/pea_routine.yml</code> contient une planification (« cron ») :</p>
+      <pre><code><span class="k">schedule:</span>
+  - <span class="k">cron:</span> <span class="s">'30 15 * * 1-5'</span>   <span class="c"># 15h30 UTC, du lundi au vendredi</span></code></pre>
+      <p><code>15:30 UTC</code> ≈ <b>17h30 à Paris</b> en été (16h30 en hiver), soit après la clôture d'Euronext. Pour changer l'heure, modifiez ce nombre (au format UTC) directement sur GitHub.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════ ÉTAPE 7 - CRON-JOB.ORG ════════════════ -->
+<section>
+  <div class="wrap">
+    <h2><span class="num">7</span>Fiabiliser l'horaire avec cron-job.org <span class="opt">optionnel</span></h2>
+    <p class="lead">Le « cron » de GitHub est gratuit mais peut être <b>retardé de 5 à 30 min</b> aux heures de pointe, voire sauté. Pour un envoi à l'heure pile, on délègue le déclenchement à <a href="https://cron-job.org">cron-job.org</a> (gratuit), qui « sonne » votre robot via l'API GitHub.</p>
+    <div class="card">
+      <h3>a) Créer un jeton d'accès GitHub (PAT)</h3>
+      <ol class="steps">
+        <li>Allez sur <a href="https://github.com/settings/tokens?type=beta">github.com/settings/tokens</a> → <b>Fine-grained tokens → Generate new token</b>.</li>
+        <li><b>Repository access</b> : « Only select repositories » → choisissez votre fork.</li>
+        <li><b>Permissions → Repository permissions → Contents : Read and write</b> et <b>Actions : Read and write</b>... puis générez et <b>copiez le jeton</b> (commence par <code>github_pat_...</code>).</li>
+      </ol>
+      <div class="note warn"><span class="ni">🔑</span><div>Ce jeton est un mot de passe. Ne le partagez jamais, ne le mettez pas dans le code. Vous le collerez uniquement dans cron-job.org. S'il fuite, révoquez-le immédiatement.</div></div>
+    </div>
+    <div class="card">
+      <h3>b) Configurer le déclencheur sur cron-job.org</h3>
+      <ol class="steps">
+        <li>Créez un compte sur <a href="https://cron-job.org">cron-job.org</a> → <b>Create cronjob</b>.</li>
+        <li><b>URL</b> (remplacez <code>VOTRE-PSEUDO</code>) :
+          <pre><code>https://api.github.com/repos/<span class="s">VOTRE-PSEUDO</span>/pea-routine/dispatches</code></pre>
+        </li>
+        <li>Réglez l'horaire souhaité (ex : 17h30, du lundi au vendredi, fuseau Europe/Paris).</li>
+        <li>Dans les réglages avancés, choisissez la méthode <b>POST</b>, puis ajoutez les en-têtes (Headers) :
+          <pre><code><span class="k">Authorization:</span> Bearer <span class="s">VOTRE_JETON_GITHUB</span>
+<span class="k">Accept:</span> application/vnd.github+json
+<span class="k">Content-Type:</span> application/json</code></pre>
+        </li>
+        <li>Dans le corps (Body) de la requête, collez :
+          <pre><code>{<span class="k">"event_type"</span>: <span class="s">"run-pea"</span>}</code></pre>
+        </li>
+        <li>Enregistrez et utilisez <b>« Run now »</b> pour tester : votre robot doit se lancer dans l'onglet Actions.</li>
+      </ol>
+      <div class="note tip"><span class="ni">⚙️</span><div>Le workflow écoute déjà cet événement (<code>repository_dispatch: types: [run-pea]</code>). Vous pouvez désormais <b>retirer la ligne <code>schedule:</code></b> du workflow pour éviter un double envoi, ou la garder en filet de sécurité.</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════ GÉRER SES POSITIONS ════════════════ -->
+<section style="background:#fff;border-top:1px solid var(--line);border-bottom:1px solid var(--line)">
+  <div class="wrap">
+    <div class="sec-tag">Au quotidien</div>
+    <h2>Mettre à jour vos positions</h2>
+    <p class="lead">Quand vous passez un ordre, vous recevez un « avis d'opéré » de votre courtier (quantité, cours, frais). Un formulaire intégré recalcule tout pour vous - pas de maths à faire.</p>
+    <div class="card">
+      <h3>Depuis GitHub (même au téléphone)</h3>
+      <ol class="steps">
+        <li>Onglet <b>Actions</b> → <b>« Position - Achat / Vente »</b> → <b>Run workflow</b>.</li>
+        <li>Remplissez le formulaire en recopiant l'avis d'opéré :
+          <ul class="bul">
+            <li><b>operation</b> : <code>achat</code> ou <code>vente</code></li>
+            <li><b>ticker</b> : ex. <code>TTE.PA</code></li>
+            <li><b>quantite</b>, <b>cours</b>, <b>frais</b> (la virgule décimale est acceptée)</li>
+            <li><b>nom</b> + <b>categorie</b> : uniquement pour une <b>nouvelle</b> valeur</li>
+          </ul>
+        </li>
+        <li>Validez : le robot recalcule le PRU et met à jour <code>portfolio.json</code> tout seul.</li>
+      </ol>
+      <table class="tbl">
+        <tr><th>Opération</th><th>Ce qui est recalculé</th></tr>
+        <tr><td><b>Achat (renforcement)</b></td><td>Nouveau PRU = moyenne pondérée ; quantité augmentée.</td></tr>
+        <tr><td><b>Vente partielle</b></td><td>Quantité réduite ; le PRU ne change pas.</td></tr>
+        <tr><td><b>Vente totale</b></td><td>La ligne est retirée du portefeuille.</td></tr>
+        <tr><td><b>Nouvelle position</b></td><td>Ajoutée avec son PRU (nom + catégorie requis).</td></tr>
+      </table>
+    </div>
+    <div class="card">
+      <h3>En local (sur votre ordinateur)</h3>
+      <pre><code><span class="c"># Renforcer : 10 titres à 57,50 €</span>
+python3 position.py achat TTE.PA 10 <span class="k">--cours</span> 57.50 <span class="k">--frais</span> 0
+
+<span class="c"># Alléger : vendre 5 titres</span>
+python3 position.py vente TTE.PA 5
+
+<span class="c"># Nouvelle position</span>
+python3 position.py achat AI.PA 4 <span class="k">--cours</span> 175.20 <span class="k">--nom</span> <span class="s">"Air Liquide (AI)"</span> <span class="k">--categorie</span> <span class="s">"Actions FR"</span></code></pre>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════ PERSONNALISATION ════════════════ -->
+<section>
+  <div class="wrap">
+    <div class="sec-tag">Pour aller plus loin</div>
+    <h2>Personnalisation</h2>
+    <div class="grid">
+      <div class="feat"><div class="ico">🕐</div><h3>Changer l'heure d'envoi</h3><p>Modifiez le <code>cron</code> dans <code>pea_routine.yml</code> (au format UTC).</p></div>
+      <div class="feat"><div class="ico">🏷️</div><h3>Nouvelles catégories</h3><p>Le champ <code>cat</code> est libre : le graphe de répartition s'adapte automatiquement.</p></div>
+      <div class="feat"><div class="ico">✍️</div><h3>Ton de la note IA</h3><p>Le prompt se trouve dans la fonction <code>generate_commentary()</code> de <code>pea_routine.py</code>.</p></div>
+      <div class="feat"><div class="ico">🌍</div><h3>Autres places boursières</h3><p>Changez le suffixe du ticker (<code>.PA</code>, <code>.AS</code>, <code>.DE</code>…) selon la place Yahoo Finance.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════ FAQ ════════════════ -->
+<section style="background:#fff;border-top:1px solid var(--line)">
+  <div class="wrap">
+    <div class="sec-tag">Dépannage</div>
+    <h2>Questions fréquentes</h2>
+    <details><summary>Je n'ai pas reçu l'email</summary><div class="ans">Vérifiez vos spams, puis l'onglet <b>Actions</b> : si le job est rouge, lisez les logs. Causes typiques : <code>GMAIL_PASSWORD</code> incorrect (utilisez bien le mot de passe d'<b>application</b> à 16 lettres), validation 2 étapes Gmail non activée, ou un secret mal nommé.</div></details>
+    <details><summary>Un de mes titres affiche « N/A »</summary><div class="ans">Le <code>ticker</code> est probablement faux. Cherchez la valeur exacte sur <a href="https://finance.yahoo.com">finance.yahoo.com</a> et recopiez le symbole tel quel (avec son suffixe de place, ex. <code>.PA</code>).</div></details>
+    <details><summary>Le robot s'arrête après quelques jours</summary><div class="ans">GitHub désactive le cron des dépôts inactifs depuis 60 jours. Faites une petite modification (ou un « Run workflow » manuel) de temps en temps, ou utilisez le déclencheur cron-job.org de l'étape 7 qui n'a pas cette limite.</div></details>
+    <details><summary>Combien ça coûte ?</summary><div class="ans"><b>0 €</b> pour GitHub Actions, Yahoo Finance et Gmail. Seule la note de marché IA est payante (clé Anthropic) : ≈ 0,10 à 0,15 € par note, soit <b>~5 à 8 € par an</b> pour 1 note/semaine - et elle reste totalement optionnelle.</div></details>
+    <details><summary>Mes données financières sont-elles publiques ?</summary><div class="ans">Uniquement si votre dépôt est <b>public</b> (les montants de <code>portfolio.json</code> seraient alors visibles). Pour les garder privés, créez un dépôt <b>privé</b> : les Actions restent gratuites pour un usage personnel. Vos mots de passe, eux, sont toujours protégés dans les Secrets.</div></details>
+    <details><summary>Je n'ai pas de PEE, c'est grave ?</summary><div class="ans">Non. Laissez le bloc <code>pee</code> de l'exemple, ou mettez de petites valeurs. La section PEE s'affichera mais vous pouvez l'ignorer.</div></details>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <p style="font-size:16px;color:#e2e8f0;font-weight:600;margin-bottom:8px">Votre rapport P&amp;L automatisé est prêt 🎉</p>
+    <p>Projet open-source · <b>GitHub Actions</b> + <b>Python</b> + <b>Yahoo Finance</b> + <b>Claude</b></p>
+    <p style="margin-top:14px;color:#64748b">Ce guide ne constitue pas un conseil en investissement. Les données proviennent de Yahoo Finance et peuvent comporter des délais ou erreurs.</p>
+  </div>
+</footer>
+
+</body>
+</html>

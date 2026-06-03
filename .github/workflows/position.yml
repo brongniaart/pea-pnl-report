@@ -1,0 +1,67 @@
+name: Position — Achat / Vente
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: "Opération"
+        type: choice
+        options: [achat, vente]
+        required: true
+      ticker:
+        description: "Ticker Yahoo (ex: TTE.PA, DCAM.PA)"
+        required: true
+      quantite:
+        description: "Quantité"
+        required: true
+      cours:
+        description: "Cours unitaire en € (achat — virgule OK)"
+        required: false
+        default: "0"
+      frais:
+        description: "Frais de courtage en €"
+        required: false
+        default: "0"
+      nom:
+        description: "Nom complet (NOUVELLE position uniquement) ex: Air Liquide (AI)"
+        required: false
+        default: ""
+      categorie:
+        description: "Catégorie (NOUVELLE position) ex: Actions FR, ETF MSCI World"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  maj-position:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout du repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Mettre à jour portfolio.json
+        run: |
+          python position.py "${{ inputs.operation }}" "${{ inputs.ticker }}" "${{ inputs.quantite }}" \
+            --cours "${{ inputs.cours }}" \
+            --frais "${{ inputs.frais }}" \
+            --nom "${{ inputs.nom }}" \
+            --categorie "${{ inputs.categorie }}"
+
+      - name: Committer portfolio.json
+        run: |
+          if [[ -n "$(git status --porcelain portfolio.json)" ]]; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add portfolio.json
+            git commit -m "position: ${{ inputs.operation }} ${{ inputs.quantite }} ${{ inputs.ticker }}"
+            git push
+          else
+            echo "Aucun changement dans portfolio.json"
+          fi
