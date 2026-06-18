@@ -318,9 +318,10 @@ def append_history(snapshot):
         return load_history()
 
 def build_history_chart_html(history):
-    """Mini graphique (barres CSS) de la valorisation totale sur les 12 derniers
-    points. Renvoie '' si moins de 2 points disponibles."""
-    pts = [r for r in history if r.get("total_valo") not in (None, "")][-12:]
+    """Mini graphique (barres CSS) de la valorisation totale sur les 5 derniers
+    relevés. Renvoie '' si moins de 2 points disponibles. Les barres vivent dans
+    une piste (.ch-track) à hauteur fixe pour ne jamais déborder du cadre."""
+    pts = [r for r in history if r.get("total_valo") not in (None, "")][-5:]
     if len(pts) < 2:
         return ""
 
@@ -334,17 +335,23 @@ def build_history_chart_html(history):
     delta_p = delta / first_v * 100 if first_v else 0
     dcol    = "up" if delta >= 0 else "dn"
 
+    def _kfmt(v):
+        # Etiquette compacte au-dessus de la barre : 37,1k si >= 1000
+        return f"{v/1000:.1f}k".replace(".", ",") if v >= 1000 else f"{v:.0f}"
+
     bars = ""
     for r in pts:
         v = r["total_valo"]
         # Hauteur normalisée 18-100% pour que les petites barres restent visibles
-        h = 18 + (v - vmin) / span * 82
+        h = 30 + (v - vmin) / span * 70
         bcol = "#16a34a" if (r.get("total_pl") or 0) >= 0 else "#dc2626"
         # Étiquette : JJ/MM extrait de la date ISO YYYY-MM-DD
         d = r.get("date", "")
         lbl = f"{d[8:10]}/{d[5:7]}" if len(d) >= 10 else d
         bars += (f'<div class="ch-bar" title="{lbl} · {v:,.0f} €">'
-                 f'<div class="ch-bar-fill" style="height:{h:.0f}%;background:{bcol}"></div>'
+                 f'<div class="ch-bv">{_kfmt(v)}</div>'
+                 f'<div class="ch-track"><div class="ch-bar-fill" '
+                 f'style="height:{h:.0f}%;background:{bcol}"></div></div>'
                  f'<div class="ch-bar-lbl">{lbl}</div></div>').replace(",", " ")
 
     return (
@@ -359,6 +366,49 @@ def build_history_chart_html(history):
         f'  <div class="ch-bars">{bars}</div>'
         f'</div>'
     ).replace(",", " ")
+
+
+def compute_ath(history):
+    """Analyse du plus-haut historique (ATH) sur la valorisation totale.
+    Renvoie un dict : nouveau record, ou distance (drawdown) au plus-haut
+    precedent. None si moins de 2 releves."""
+    pts = [r for r in history if r.get("total_valo") not in (None, "")]
+    if len(pts) < 2:
+        return None
+    valos    = [r["total_valo"] for r in pts]
+    current  = valos[-1]
+    prev     = valos[:-1]
+    prev_ath = max(prev)
+    prev_dt  = pts[prev.index(prev_ath)].get("date", "")
+    if current >= prev_ath:
+        return {"new": True, "ath": current, "prev_ath": prev_ath,
+                "prev_date": prev_dt, "gain": current - prev_ath}
+    return {"new": False, "ath": prev_ath, "prev_date": prev_dt,
+            "dist": current - prev_ath,
+            "dist_pct": (current - prev_ath) / prev_ath * 100 if prev_ath else 0}
+
+
+def _date_court(iso):
+    """JJ/MM/AAAA depuis une date ISO YYYY-MM-DD."""
+    return f"{iso[8:10]}/{iso[5:7]}/{iso[0:4]}" if len(iso) >= 10 else iso
+
+
+def build_ath_html(history):
+    """Bandeau plus-haut historique : message de record, ou distance au dernier
+    sommet. Renvoie '' si l'historique est trop court."""
+    ath = compute_ath(history) if history else None
+    if not ath:
+        return ""
+    if ath["new"]:
+        extra = ""
+        if ath["gain"] > 0:
+            extra = (f" - soit {eur(ath['gain'], True)} au-dessus du precedent "
+                     f"record du {_date_court(ath['prev_date'])}")
+        return (f'<div class="ath ath-up"><span class="ath-i">&#127942;</span>'
+                f'<div><b>Nouveau plus-haut historique</b> : {eur(ath["ath"])}{extra}.</div></div>')
+    return (f'<div class="ath ath-dn"><span class="ath-i">&#128202;</span>'
+            f'<div><b>{eur(ath["dist"], True)}</b> ({pct(ath["dist_pct"])}) sous le plus-haut '
+            f'historique de {eur(ath["ath"])}, atteint le {_date_court(ath["prev_date"])}.</div></div>')
 
 
 def eur(v, sign=False):
@@ -478,10 +528,16 @@ tfoot td.L{text-align:left}
 .ch-val{font-size:18px;font-weight:700;color:#111}
 .ch-delta{font-size:11px;font-weight:600;margin-left:8px}
 .ch-lbl{font-size:9.5px;color:#9ca3af;font-weight:500;text-transform:uppercase;letter-spacing:.5px}
-.ch-bars{display:flex;align-items:flex-end;gap:5px;height:90px}
-.ch-bar{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%}
-.ch-bar-fill{width:100%;max-width:30px;border-radius:3px 3px 0 0}
-.ch-bar-lbl{font-size:8px;color:#9ca3af;margin-top:4px;white-space:nowrap}
+.ch-bars{display:flex;align-items:flex-end;gap:10px}
+.ch-bar{flex:1;display:flex;flex-direction:column;align-items:center}
+.ch-bv{font-size:9px;color:#6b7280;font-weight:600;margin-bottom:3px;white-space:nowrap}
+.ch-track{height:90px;width:100%;display:flex;align-items:flex-end;justify-content:center}
+.ch-bar-fill{width:100%;max-width:46px;border-radius:4px 4px 0 0;min-height:4px}
+.ch-bar-lbl{font-size:9px;color:#9ca3af;margin-top:6px;white-space:nowrap}
+.ath{display:flex;align-items:center;gap:10px;margin:0 22px 14px;padding:12px 16px;border-radius:8px;font-size:12px;line-height:1.45}
+.ath-i{font-size:18px;flex-shrink:0;line-height:1}
+.ath-up{background:#f0fdf4;border:1px solid #bbf7d0;color:#15803d}
+.ath-dn{background:#fffbeb;border:1px solid #fde68a;color:#b45309}
 @media (prefers-color-scheme:dark){
   body{background:#f3f4f6 !important}
   .w{background:#fff !important;color:#111 !important}
@@ -505,11 +561,52 @@ tfoot td.L{text-align:left}
   .chart{background:#fafafa !important}
   .ch-val{color:#111 !important}
 }
+@media only screen and (max-width:600px){
+  body{padding:10px 0 !important;background:#fff !important}
+  .w{max-width:100% !important;border:none !important;border-radius:0 !important}
+  .hdr{padding:20px 16px 14px !important}
+  .hdr-title{font-size:18px !important}
+  .kpi{padding:12px 9px !important}
+  .kpi-l{font-size:8.5px !important;letter-spacing:.4px !important}
+  .kpi-v{font-size:15px !important}
+  .kpi-s{font-size:10px !important}
+  .mkt{padding:8px 10px !important}
+  .mkt-i{padding:0 5px !important;gap:4px !important}
+  .bw{padding:10px 12px !important;gap:8px !important}
+  .bw-c{padding:10px 11px !important}
+  .per{padding:0 12px 12px !important;gap:6px !important}
+  .per-c{padding:8px 6px !important}
+  .alloc{padding:0 12px 12px !important}
+  .al-l{width:92px !important;font-size:10px !important}
+  .al-e{width:48px !important;font-size:9px !important}
+  .sec{padding:12px 14px 5px !important;letter-spacing:1.2px !important}
+  .tw{padding:0 8px 4px !important}
+  table{font-size:10px !important}
+  thead th{padding:5px 2px !important;font-size:7px !important;letter-spacing:.2px !important}
+  tbody td{padding:7px 3px !important}
+  tfoot td{padding:7px 3px !important;font-size:10px !important}
+  .tn{font-size:10.5px !important}
+  .tt{font-size:8px !important}
+  .ps,.cd,.tg,.chart,.ath,.note{margin-left:12px !important;margin-right:12px !important}
+  .cd{padding:12px 14px !important}
+  .cd-d{font-size:17px !important}
+  .tg{padding:14px 16px !important}
+  .tg-v{font-size:19px !important}
+  .tg-p{font-size:16px !important}
+  .chart{padding:12px 12px !important}
+  .ch-head{flex-direction:column;align-items:flex-start !important;gap:2px !important}
+  .ch-val{font-size:16px !important}
+  .ch-bars{gap:6px !important}
+  .ch-track{height:74px !important}
+  .ch-bv{font-size:8px !important}
+  .ch-bar-lbl{font-size:8px !important}
+}
 """
 
 def build_html(pf, pee_cfg, marche, now, commentary_html=None, history=None):
     is_friday = now.weekday() == 4
     chart_html = build_history_chart_html(history) if history else ""
+    ath_html   = build_ath_html(history) if history else ""
     items = [(p, calc(p)) for p in pf]
     tot_inv  = sum(c["invest"] for _, c in items)
     tot_valo = sum(c["valo"]   for _, c in items if c["valo"])
@@ -777,6 +874,7 @@ def build_html(pf, pee_cfg, marche, now, commentary_html=None, history=None):
     <div class="tg-p">{eur(total_pl_glob,True)}</div>
     <div class="tg-s">{pct(total_pl_pct)}</div></div>
 </div>
+{ath_html}
 {chart_html}
 {f'''<div class="sec" style="padding-top:18px">Récap de la semaine</div>
 <div class="tw">
