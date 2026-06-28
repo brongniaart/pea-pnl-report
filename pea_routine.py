@@ -138,17 +138,44 @@ def fetch_dividends(portfolio):
             t = yf.Ticker(p["ticker"])
             info = getattr(t, "info", None) or {}
             ts = info.get("exDividendDate")
-            rate = info.get("dividendRate") or info.get("lastDividendValue")
-            if not ts or not rate:
+            if not ts:
                 continue
             try:
                 exd = datetime.fromtimestamp(float(ts), tz=PARIS).date()
             except (TypeError, ValueError, OSError):
                 continue
-            if exd >= today:
-                out.append({"nom": p["nom"].split("(")[0].strip(), "date": exd,
-                            "rate": float(rate), "qte": p["qte"],
-                            "montant": float(rate) * p["qte"]})
+            if exd < today:
+                continue
+            # Montant PAR DETACHEMENT (et non annuel). dividendRate de yfinance
+            # est le dividende ANNUEL : pour un payeur trimestriel (TotalEnergies)
+            # il faut le diviser par 4. On prend donc le dernier versement REEL
+            # par action via l'historique .dividends, et on deduit la frequence
+            # du nombre de versements sur ~13 mois.
+            per_share = None
+            freq = None
+            try:
+                divs = t.dividends
+                if divs is not None and len(divs):
+                    per_share = float(divs.iloc[-1])
+                    last_dt = divs.index[-1]
+                    freq = sum(1 for d0 in divs.index if 0 <= (last_dt - d0).days <= 370)
+            except Exception:
+                pass
+            if per_share is None:
+                # Repli : dernier versement connu, sinon annuel / frequence
+                lastv  = info.get("lastDividendValue")
+                annual = info.get("dividendRate")
+                if lastv:
+                    per_share = float(lastv)
+                elif annual:
+                    per_share = float(annual) / (freq or 1)
+                else:
+                    continue
+            freq_label = {1: "annuel", 2: "semestriel",
+                          4: "trimestriel", 12: "mensuel"}.get(freq, "")
+            out.append({"nom": p["nom"].split("(")[0].strip(), "date": exd,
+                        "rate": per_share, "qte": p["qte"], "freq": freq_label,
+                        "montant": per_share * p["qte"]})
         except Exception:
             continue
     out.sort(key=lambda d: d["date"])
@@ -750,7 +777,7 @@ def build_ath_ministat(history):
             prevtxt = f"précédent {eur(prev)} · {_date_court(ath['prev_date'])}"
         else:
             prevtxt = _date_court(ath["prev_date"])
-        return (f"<div class='nobrk' style='display:flex;align-items:center;justify-content:space-between;"
+        return (f"<div class='nobrk ms' style='display:flex;align-items:center;justify-content:space-between;"
                 f"margin:0 22px 18px;padding:14px 18px;background:#fff;border:1px solid #cdeed6;"
                 f"border-left:3px solid #0A6E46;border-radius:11px'>"
                 f"<div style='display:flex;align-items:center;gap:13px'>"
@@ -763,7 +790,7 @@ def build_ath_ministat(history):
                 f"color:#004028'>{eur(ath['ath'])}</div>"
                 f"<div class='num' style='font-size:11px;font-weight:700;color:#0A6E46;margin-top:1px'>"
                 f"{eur(ath['gain'], True)}</div></div></div>")
-    return (f"<div class='nobrk' style='display:flex;align-items:center;justify-content:space-between;"
+    return (f"<div class='nobrk ms' style='display:flex;align-items:center;justify-content:space-between;"
             f"margin:0 22px 18px;padding:14px 18px;background:#fff;border:1px solid #f6d8c6;"
             f"border-left:3px solid #e07644;border-radius:11px'>"
             f"<div style='display:flex;align-items:center;gap:13px'>"
@@ -791,7 +818,7 @@ def build_objectif(total_glob, settings):
     pctg = min(total_glob / cap * 100, 100)
     reste = max(cap - total_glob, 0)
     pctg_txt = f"{pctg:.1f}".replace(".", ",")
-    return (f"<div class='nobrk' style='margin:0 22px 18px;padding:16px 20px;border:1px solid #e2e8f0;"
+    return (f"<div class='nobrk obj' style='margin:0 22px 18px;padding:16px 20px;border:1px solid #e2e8f0;"
             f"border-radius:12px;background:#fff'>"
             f"<div style='display:flex;justify-content:space-between;align-items:baseline;margin-bottom:11px'>"
             f"<div style='font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;"
@@ -857,7 +884,8 @@ def build_dividendes(dividends):
                  f"<div style='font-size:8px;font-weight:700;color:#a0aec0;text-transform:uppercase;"
                  f"letter-spacing:.04em'>{MOIS_ABBR[dd.month-1]}</div></div>"
                  f"<div style='flex:1'><div style='font-size:12px;font-weight:600;color:#1a202c'>{d['nom']}</div>"
-                 f"<div style='font-size:9.5px;color:#a0aec0'>{d['rate']:.2f}&nbsp;€/action · {d['qte']} titres</div></div>"
+                 f"<div style='font-size:9.5px;color:#a0aec0'>{d['rate']:.2f}&nbsp;€/action"
+                 f"{(' (' + d['freq'] + ')') if d.get('freq') else ''} · {d['qte']} titres</div></div>"
                  f"<div class='num' style='font-size:13px;font-weight:800;color:#0A6E46'>"
                  f"&#8776;&nbsp;{d['montant']:.0f}&nbsp;€</div></div>")
     return (f"<div style='font-size:10px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;"
@@ -932,15 +960,15 @@ def build_html(pf, pee_cfg, marche, now, commentary_html=None, history=None, set
               f"<div style='text-align:right'><div style='font-size:10px;color:#a0aec0;text-transform:uppercase;"
               f"letter-spacing:.08em'>{date_str}</div>"
               f"<div style='font-size:11px;color:#718096;font-weight:600;margin-top:2px'>{label} · {heure_str}</div></div></div>"
-              f"<div style='display:flex;align-items:flex-end;justify-content:space-between;margin-top:16px'>"
-              f"<div style='font-size:24px;font-weight:800;color:#004028;letter-spacing:-.015em;"
+              f"<div class='hdr-b' style='display:flex;align-items:flex-end;justify-content:space-between;margin-top:16px;gap:10px'>"
+              f"<div class='hdr-t' style='font-size:24px;font-weight:800;color:#004028;letter-spacing:-.015em;"
               f"white-space:nowrap'>{titre}</div>"
               f"<div style='display:inline-flex;align-items:center;gap:5px;background:#eafaef;border-radius:20px;"
               f"padding:5px 12px'><span style='color:{col(tot_jour)};font-size:10px'>{arrow_day}</span>"
               f"<span class='num' style='font-size:12px;font-weight:700;color:{col(tot_jour)}'>"
               f"{pct(jour_pct)} aujourd'hui</span></div></div></div>")
 
-    kpi = (f"<div class='nobrk' style='display:flex;border-bottom:1px solid #eef2f0'>"
+    kpi = (f"<div class='nobrk kr' style='display:flex;border-bottom:1px solid #eef2f0'>"
            f"<div style='flex:1;padding:18px 22px;border-right:1px solid #eef2f0'>"
            f"<div style='font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;"
            f"color:#a0aec0;margin-bottom:6px'>Valorisation PEA</div>"
@@ -970,7 +998,7 @@ def build_html(pf, pee_cfg, marche, now, commentary_html=None, history=None, set
         mkt += (f"<div style='flex:1;{pad}'><div style='font-size:9.5px;font-weight:600;color:#718096'>{nom}</div>"
                 f"<div class='num' style='font-size:11.5px;font-weight:700;color:#1a202c;margin-top:1px'>"
                 f"{fmt_index(d['val'])} <span style='color:{mc};font-size:10px'>{pct(d['pct'])}</span></div></div>")
-    mkt_wrap = (f"<div class='nobrk' style='display:flex;background:#F6F9EE;padding:11px 22px;"
+    mkt_wrap = (f"<div class='nobrk mr' style='display:flex;background:#F6F9EE;padding:11px 22px;"
                 f"border-bottom:1px solid #eef2f0'>{mkt}</div>")
 
     if best:
@@ -1036,7 +1064,7 @@ def build_html(pf, pee_cfg, marche, now, commentary_html=None, history=None, set
     tf = "padding:10px 4px;border-top:2px solid #e2e8f0;font-weight:700"
     pos_table = (f"<div style='font-size:10px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;"
                  f"color:#0A6E46;padding:6px 22px 6px'>Positions PEA</div>"
-                 f"<div style='padding:0 22px 4px'><table class='num' style='width:100%;border-collapse:collapse;"
+                 f"<div style='padding:0 22px 4px'><table class='num pt' style='width:100%;border-collapse:collapse;"
                  f"font-size:11.5px;table-layout:fixed'>"
                  f"<colgroup><col style='width:27%'><col style='width:7%'><col style='width:12%'>"
                  f"<col style='width:16%'><col style='width:21%'><col style='width:17%'></colgroup>"
@@ -1057,7 +1085,7 @@ def build_html(pf, pee_cfg, marche, now, commentary_html=None, history=None, set
                "color:#0A6E46'>Patrimoine &amp; horizon</div>"
                "<div style='flex:1;height:1px;background:#eef2f0'></div></div>")
 
-    total_card = (f"<div class='nobrk' style='margin:0 22px 16px;padding:18px 24px;background:#fff;"
+    total_card = (f"<div class='nobrk tc' style='margin:0 22px 16px;padding:18px 24px;background:#fff;"
                   f"border:1px solid #e2e8f0;border-bottom:3px solid #0A6E46;border-radius:13px;display:flex;"
                   f"justify-content:space-between;align-items:center'>"
                   f"<div><div style='font-size:9.5px;color:#a0aec0;text-transform:uppercase;letter-spacing:.1em;"
@@ -1089,7 +1117,7 @@ def build_html(pf, pee_cfg, marche, now, commentary_html=None, history=None, set
     horizon = ""
     cards = pee_card + (fiscal or "")
     if cards:
-        horizon = f"<div class='nobrk' style='display:flex;gap:12px;margin:0 22px 18px'>{cards}</div>"
+        horizon = f"<div class='nobrk hz' style='display:flex;gap:12px;margin:0 22px 18px'>{cards}</div>"
 
     dividends_html = build_dividendes(dividends)
 
@@ -1111,7 +1139,7 @@ def build_html(pf, pee_cfg, marche, now, commentary_html=None, history=None, set
                       f"<td style='text-align:right;padding:8px 4px;border-bottom:1px solid #f4f6f1;color:{col(c['semaine'])}'>{seme_txt}</td></tr>")
         weekly = (f"<div style='font-size:10px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;"
                   f"color:#0A6E46;padding:6px 22px 6px'>Récap de la semaine</div>"
-                  f"<div style='padding:0 22px 6px'><table class='num' style='width:100%;border-collapse:collapse;"
+                  f"<div style='padding:0 22px 6px'><table class='num pt' style='width:100%;border-collapse:collapse;"
                   f"font-size:11.5px;table-layout:fixed'>"
                   f"<colgroup><col style='width:34%'><col style='width:16%'><col style='width:16%'>"
                   f"<col style='width:17%'><col style='width:17%'></colgroup>"
@@ -1153,8 +1181,22 @@ def build_html(pf, pee_cfg, marche, now, commentary_html=None, history=None, set
              ".num{font-variant-numeric:tabular-nums}"
              ".up{color:#0A6E46}.dn{color:#e07644}"
              ".note-p p{margin:0 0 10px 0}.note-p p:last-child{margin-bottom:0}"
-             "@media only screen and (max-width:600px){body{padding:0 !important;background:#fff !important}"
-             "#report{border:none !important;border-radius:0 !important}}"
+             "@media only screen and (max-width:600px){"
+             "body{padding:0 !important;background:#fff !important}"
+             "#report{border:none !important;border-radius:0 !important}"
+             ".hdr-b{flex-direction:column !important;align-items:flex-start !important;gap:10px !important}"
+             ".hdr-t{font-size:20px !important;white-space:normal !important}"
+             ".kr>div{padding:14px 10px !important;min-width:0 !important}"
+             ".mr{flex-wrap:wrap !important;padding:10px 14px !important}"
+             ".mr>div{flex:0 0 50% !important;border:none !important;padding:5px 6px !important}"
+             ".pt{font-size:10px !important}"
+             ".pt td,.pt th{padding:6px 2px !important;white-space:normal !important}"
+             ".tc{flex-direction:column !important;align-items:flex-start !important;gap:12px !important}"
+             ".tc>div:last-child{text-align:left !important}"
+             ".hz{flex-direction:column !important}"
+             ".ms{gap:10px !important}.ms>div:last-child{text-align:right !important;flex-shrink:0}"
+             ".obj>div{flex-wrap:wrap !important;gap:4px 10px !important}"
+             "}"
              "</style>")
 
     body = (header + kpi + mkt_wrap + bw + contrib + periods + chart_html + ath_html + pos_table + stacked
