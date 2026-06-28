@@ -14,5 +14,7 @@
     "vl_j2": 164.50,
     "vl_date": "01/01/2026",
     "disponibilite": "01/01/2030"
-  }
+  },
+  "objectif": 50000,
+  "pea_open_date": "15/03/2021"
 }

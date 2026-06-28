@@ -27,7 +27,6 @@ def date_fr(now):
     return f"{JOURS_FR[now.weekday()]} {now.day:02d} {MOIS_FR[now.month-1]} {now.year}"
 
 # ── Configuration par défaut (fallback si portfolio.json absent/illisible) ──
-# Données d'EXEMPLE - remplacez-les via portfolio.json (voir portfolio.example.json).
 DEFAULT_PORTFOLIO = [
     {"nom": "Amundi MSCI World (CW8)", "ticker": "CW8.PA", "qte": 10, "pru": 500.00, "cat": "ETF MSCI World"},
     {"nom": "Amundi Nasdaq-100 (PUST)", "ticker": "PUST.PA", "qte": 50, "pru": 70.00, "cat": "ETF Nasdaq-100"},
@@ -37,6 +36,10 @@ DEFAULT_PORTFOLIO = [
 DEFAULT_PEE = {"nom": "FCPE Actions Monde",
                "parts": 25.0, "pru": 150.00, "vl_last": 165.00, "vl_j2": 164.50,
                "vl_date": "01/01/2026", "disponibilite": "01/01/2030"}
+# Reglages optionnels lus depuis portfolio.json (None = section masquee)
+#   objectif      : cap de patrimoine vise (EUR) -> jauge de progression
+#   pea_open_date : date d'ouverture du PEA "JJ/MM/AAAA" -> compte a rebours fiscal 5 ans
+DEFAULT_SETTINGS = {"objectif": None, "pea_open_date": None}
 
 def position_cat(p):
     """Catégorie d'une position pour la répartition. Utilise le champ 'cat' du
@@ -76,13 +79,15 @@ def load_config():
         # On travaille sur des copies pour ne pas muter la config en mémoire
         portfolio = [dict(p) for p in portfolio]
         pee       = dict(pee)
+        settings  = {"objectif": cfg.get("objectif"),
+                     "pea_open_date": cfg.get("pea_open_date")}
         print(f"[Config] {CONFIG_PATH} chargé - {len(portfolio)} position(s)", flush=True)
-        return portfolio, pee
+        return portfolio, pee, settings
     except Exception as e:
         print(f"[Config] Échec lecture {CONFIG_PATH} ({e}) - fallback défaut", flush=True)
-        return [dict(p) for p in DEFAULT_PORTFOLIO], dict(DEFAULT_PEE)
+        return [dict(p) for p in DEFAULT_PORTFOLIO], dict(DEFAULT_PEE), dict(DEFAULT_SETTINGS)
 
-PORTFOLIO, PEE = load_config()
+PORTFOLIO, PEE, SETTINGS = load_config()
 
 EMAIL = {
     "smtp_serveur": "smtp.gmail.com",
@@ -121,6 +126,34 @@ def fetch_pea(portfolio):
         except Exception:
             p["prix"] = p["veille"] = p["5d"] = p["1mo"] = p["ytd"] = None
     return portfolio
+
+def fetch_dividends(portfolio):
+    """Prochaines dates de detachement de dividende (best effort via yfinance).
+    Ne garde que les lignes avec une ex-date FUTURE et un montant connu ; les
+    ETF capitalisants (Amundi) n'en ont pas et sont donc naturellement exclus."""
+    out = []
+    today = date.today()
+    for p in portfolio:
+        try:
+            t = yf.Ticker(p["ticker"])
+            info = getattr(t, "info", None) or {}
+            ts = info.get("exDividendDate")
+            rate = info.get("dividendRate") or info.get("lastDividendValue")
+            if not ts or not rate:
+                continue
+            try:
+                exd = datetime.fromtimestamp(float(ts), tz=PARIS).date()
+            except (TypeError, ValueError, OSError):
+                continue
+            if exd >= today:
+                out.append({"nom": p["nom"].split("(")[0].strip(), "date": exd,
+                            "rate": float(rate), "qte": p["qte"],
+                            "montant": float(rate) * p["qte"]})
+        except Exception:
+            continue
+    out.sort(key=lambda d: d["date"])
+    return out
+
 
 def fetch_marche():
     indices = {"CAC 40": "^FCHI", "S&P 500": "^GSPC", "NASDAQ": "^IXIC", "EUR/USD": "EURUSD=X"}
@@ -419,11 +452,11 @@ def eur(v, sign=False):
 def pct(v, sign=True):
     if v is None: return "N/A"
     s = "+" if sign and v > 0 else ""
-    return f"{s}{v:.2f}%"
+    return f"{s}{v:.2f}".replace(".", ",") + "&nbsp;%"
 
 def col(v):
-    if v is None or v == 0: return "#9ca3af"
-    return "#16a34a" if v > 0 else "#dc2626"
+    if v is None or v == 0: return "#a0aec0"
+    return "#0A6E46" if v > 0 else "#e07644"
 
 def fmt_index(v):
     if v is None: return "-"
@@ -603,10 +636,239 @@ tfoot td.L{text-align:left}
 }
 """
 
-def build_html(pf, pee_cfg, marche, now, commentary_html=None, history=None):
+GREENS = ["#0A6E46", "#54C77A", "#ADECA2", "#2f8f5f", "#8fd9a8", "#cdeed6"]
+MOIS_ABBR = ["janv.", "févr.", "mars", "avr.", "mai", "juin",
+             "juil.", "août", "sept.", "oct.", "nov.", "déc."]
+
+
+def build_stacked_alloc(alloc_sorted, alloc_tot):
+    """Barre de répartition empilée + légende (style direction A)."""
+    bars = ""
+    legend = ""
+    for i, (cat, val) in enumerate(alloc_sorted):
+        color = GREENS[i % len(GREENS)]
+        w = val / alloc_tot * 100
+        bars += f"<div style='width:{w:.1f}%;background:{color}'></div>"
+        legend += (f"<span style='white-space:nowrap'><span style='display:inline-block;"
+                   f"width:8px;height:8px;border-radius:2px;background:{color};margin-right:5px'></span>"
+                   f"{cat} {w:.1f}&nbsp;%</span>")
+    return (f"<div style='padding:6px 22px 16px'>"
+            f"<div style='display:flex;gap:5px;border-radius:6px;overflow:hidden;height:9px'>{bars}</div>"
+            f"<div style='display:flex;flex-wrap:wrap;gap:14px;margin-top:10px;"
+            f"font-size:10.5px;color:#718096'>{legend}</div></div>")
+
+
+def build_contribution(items, tot_jour):
+    """Barres divergentes : contribution de chaque ligne a la perf du jour (en EUR)."""
+    movers = []
+    for p, cc in items:
+        if cc.get("jour") is not None:
+            movers.append((p["nom"].split("(")[0].strip(), cc["jour"]))
+    if not movers:
+        return ""
+    movers.sort(key=lambda x: x[1], reverse=True)
+    maxabs = max(abs(v) for _, v in movers) or 1
+    rows = ""
+    for name, v in movers:
+        w = abs(v) / maxabs * 100
+        vcol = "#0A6E46" if v >= 0 else "#e07644"
+        if v >= 0:
+            left = ""
+            right = f"<div style='width:{w:.0f}%;height:9px;background:#0A6E46;border-radius:0 3px 3px 0'></div>"
+        else:
+            left = f"<div style='width:{w:.0f}%;height:9px;background:#e07644;border-radius:3px 0 0 3px'></div>"
+            right = ""
+        rows += (f"<div style='display:flex;align-items:center;gap:10px;margin-bottom:8px'>"
+                 f"<div style='width:130px;font-size:11px;font-weight:600;color:#374151;text-align:right'>{name}</div>"
+                 f"<div style='flex:1;display:flex;align-items:center;height:13px'>"
+                 f"<div style='flex:1;display:flex;justify-content:flex-end'>{left}</div>"
+                 f"<div style='width:1px;height:13px;background:#d7dee6'></div>"
+                 f"<div style='flex:1;display:flex;justify-content:flex-start'>{right}</div></div>"
+                 f"<div class='num' style='width:62px;text-align:right;font-size:11px;"
+                 f"font-weight:700;color:{vcol}'>{eur(v, True)}</div></div>")
+    return (f"<div style='font-size:10px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;"
+            f"color:#0A6E46;padding:16px 22px 4px'>Contribution à la perf du jour "
+            f"<span style='color:#cbd5e0;font-weight:600;letter-spacing:0;text-transform:none'>"
+            f"· total {eur(tot_jour, True)}</span></div>"
+            f"<div class='nobrk' style='padding:6px 22px 14px'>{rows}</div>")
+
+
+def build_chart_svg(history):
+    """Courbe d'aire de la valorisation totale (5 derniers releves)."""
+    pts = [r for r in (history or []) if r.get("total_valo") not in (None, "")][-5:]
+    if len(pts) < 2:
+        return ""
+    valos = [r["total_valo"] for r in pts]
+    vmin, vmax = min(valos), max(valos)
+    span = (vmax - vmin) or 1
+    n = len(pts)
+    first_v = pts[0]["total_valo"]
+    last_v = pts[-1]["total_valo"]
+    delta = last_v - first_v
+    delta_p = delta / first_v * 100 if first_v else 0
+    dcol = "#0A6E46" if delta >= 0 else "#e07644"
+    xs = [20 + i * (600.0 / (n - 1)) for i in range(n)]
+    ys = [140 - (v - vmin) / span * 126 for v in valos]
+    line = "M" + " L".join(f"{x:.0f},{y:.0f}" for x, y in zip(xs, ys))
+    area = line + f" L{xs[-1]:.0f},150 L{xs[0]:.0f},150 Z"
+    labels = ""
+    for r in pts:
+        dd = r.get("date", "")
+        lbl = dd[8:10] + "/" + dd[5:7] if len(dd) >= 10 else dd
+        labels += f"<span>{lbl}</span>"
+    return (f"<div style='font-size:10px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;"
+            f"color:#0A6E46;padding:6px 22px 8px'>Évolution de la valorisation totale</div>"
+            f"<div class='nobrk' style='margin:0 22px 18px;border:1px solid #e2e8f0;border-radius:12px;"
+            f"padding:18px 20px 14px;background:#fff'>"
+            f"<div style='display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:14px'>"
+            f"<div><span class='num' style='font-size:24px;font-weight:800;color:#004028'>{eur(last_v)}</span>"
+            f"<span class='num' style='font-size:12px;font-weight:700;color:{dcol};margin-left:9px'>"
+            f"{eur(delta, True)} · {pct(delta_p)}</span></div>"
+            f"<div style='font-size:10px;color:#a0aec0;font-weight:600;text-transform:uppercase;"
+            f"letter-spacing:.05em'>{n} derniers relevés</div></div>"
+            f"<svg width='100%' viewBox='0 0 640 152' preserveAspectRatio='none' style='display:block;height:120px'>"
+            f"<defs><linearGradient id='gch' x1='0' y1='0' x2='0' y2='1'>"
+            f"<stop offset='0' stop-color='#0A6E46' stop-opacity='.22'/>"
+            f"<stop offset='1' stop-color='#0A6E46' stop-opacity='0'/></linearGradient></defs>"
+            f"<line x1='20' y1='140' x2='620' y2='140' stroke='#eef2f0' stroke-width='1'/>"
+            f"<path d='{area}' fill='url(#gch)'/>"
+            f"<path d='{line}' fill='none' stroke='#0A6E46' stroke-width='2.6' "
+            f"stroke-linecap='round' stroke-linejoin='round'/>"
+            f"<circle cx='{xs[-1]:.0f}' cy='{ys[-1]:.0f}' r='4.5' fill='#0A6E46' stroke='#fff' stroke-width='2'/></svg>"
+            f"<div class='num' style='display:flex;justify-content:space-between;margin-top:8px;"
+            f"font-size:9.5px;color:#a0aec0'>{labels}</div></div>")
+
+
+def build_ath_ministat(history):
+    """Bandeau plus-haut historique, format mini-stat (variante D)."""
+    ath = compute_ath(history) if history else None
+    if not ath:
+        return ""
+    if ath["new"]:
+        prev = ath.get("prev_ath")
+        if prev:
+            prevtxt = f"précédent {eur(prev)} · {_date_court(ath['prev_date'])}"
+        else:
+            prevtxt = _date_court(ath["prev_date"])
+        return (f"<div class='nobrk' style='display:flex;align-items:center;justify-content:space-between;"
+                f"margin:0 22px 18px;padding:14px 18px;background:#fff;border:1px solid #cdeed6;"
+                f"border-left:3px solid #0A6E46;border-radius:11px'>"
+                f"<div style='display:flex;align-items:center;gap:13px'>"
+                f"<div style='width:32px;height:32px;border-radius:9px;background:#eafaef;color:#0A6E46;"
+                f"display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0'>&#9650;</div>"
+                f"<div><div style='font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;"
+                f"color:#0A6E46'>Plus-haut historique</div>"
+                f"<div style='font-size:10px;color:#a0aec0;margin-top:3px'>{prevtxt}</div></div></div>"
+                f"<div style='text-align:right'><div class='num' style='font-size:20px;font-weight:800;"
+                f"color:#004028'>{eur(ath['ath'])}</div>"
+                f"<div class='num' style='font-size:11px;font-weight:700;color:#0A6E46;margin-top:1px'>"
+                f"{eur(ath['gain'], True)}</div></div></div>")
+    return (f"<div class='nobrk' style='display:flex;align-items:center;justify-content:space-between;"
+            f"margin:0 22px 18px;padding:14px 18px;background:#fff;border:1px solid #f6d8c6;"
+            f"border-left:3px solid #e07644;border-radius:11px'>"
+            f"<div style='display:flex;align-items:center;gap:13px'>"
+            f"<div style='width:32px;height:32px;border-radius:9px;background:#fdf3ec;color:#e07644;"
+            f"display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0'>&#9660;</div>"
+            f"<div><div style='font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;"
+            f"color:#e07644'>Sous le plus-haut</div>"
+            f"<div style='font-size:10px;color:#a0aec0;margin-top:3px'>record {eur(ath['ath'])} · "
+            f"{_date_court(ath['prev_date'])}</div></div></div>"
+            f"<div style='text-align:right'><div class='num' style='font-size:20px;font-weight:800;"
+            f"color:#e07644'>{eur(ath['dist'], True)}</div>"
+            f"<div class='num' style='font-size:11px;font-weight:700;color:#e07644;margin-top:1px'>"
+            f"{pct(ath['dist_pct'])}</div></div></div>")
+
+
+def build_objectif(total_glob, settings):
+    """Jauge de progression vers un objectif de patrimoine (config 'objectif')."""
+    cap = (settings or {}).get("objectif")
+    try:
+        cap = float(cap)
+    except (TypeError, ValueError):
+        return ""
+    if cap <= 0:
+        return ""
+    pctg = min(total_glob / cap * 100, 100)
+    reste = max(cap - total_glob, 0)
+    pctg_txt = f"{pctg:.1f}".replace(".", ",")
+    return (f"<div class='nobrk' style='margin:0 22px 18px;padding:16px 20px;border:1px solid #e2e8f0;"
+            f"border-radius:12px;background:#fff'>"
+            f"<div style='display:flex;justify-content:space-between;align-items:baseline;margin-bottom:11px'>"
+            f"<div style='font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;"
+            f"color:#0A6E46'>Objectif patrimoine</div>"
+            f"<div style='font-size:11px;color:#a0aec0;font-weight:600'>cap {eur(cap)}</div></div>"
+            f"<div style='background:#eef2f0;border-radius:6px;height:12px;overflow:hidden'>"
+            f"<div style='width:{pctg:.1f}%;height:100%;background:linear-gradient(90deg,#0A6E46,#54C77A);"
+            f"border-radius:6px'></div></div>"
+            f"<div style='display:flex;justify-content:space-between;margin-top:9px'>"
+            f"<div class='num' style='font-size:13px;font-weight:800;color:#004028'>{pctg_txt}&nbsp;% atteint</div>"
+            f"<div class='num' style='font-size:11.5px;color:#718096'>il reste "
+            f"<b style='color:#0A6E46'>{eur(reste)}</b></div></div></div>")
+
+
+def build_fiscal(settings, now):
+    """Carte echeance fiscale PEA (5 ans), depuis la config 'pea_open_date'.
+    Renvoie '' si non configuree. A placer dans la rangee horizon."""
+    od = (settings or {}).get("pea_open_date")
+    if not od:
+        return ""
+    try:
+        d0 = datetime.strptime(od, "%d/%m/%Y").date()
+    except (ValueError, TypeError):
+        return ""
+    try:
+        seuil = d0.replace(year=d0.year + 5)
+    except ValueError:
+        seuil = d0 + timedelta(days=365 * 5)
+    reste = (seuil - now.date()).days
+    if reste <= 0:
+        big = "Acquise"
+        sub = f"5 ans dépassés depuis le {seuil.strftime('%d/%m/%Y')}"
+    else:
+        years = reste // 365
+        months = (reste % 365) // 30
+        if years > 0:
+            an = "an" if years == 1 else "ans"
+            big = f"{years} {an} {months} mois"
+        else:
+            big = f"{months} mois"
+        sub = f"seuil atteint le {seuil.strftime('%d/%m/%Y')}"
+    return (f"<div style='flex:1;padding:14px 16px;background:#F6F9EE;border-radius:11px'>"
+            f"<div style='font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;"
+            f"color:#0A6E46'>Échéance fiscale PEA · 5 ans</div>"
+            f"<div style='font-size:12.5px;font-weight:600;color:#1a202c;margin-top:6px'>"
+            f"Exonération des plus-values</div>"
+            f"<div class='num' style='font-size:16px;font-weight:800;color:#004028;margin-top:5px'>{big}</div>"
+            f"<div style='font-size:9.5px;color:#a0aec0;margin-top:4px'>{sub}</div></div>")
+
+
+def build_dividendes(dividends):
+    """Liste des prochains dividendes (dates de detachement)."""
+    if not dividends:
+        return ""
+    rows = ""
+    for d in dividends[:4]:
+        dd = d["date"]
+        rows += (f"<div style='display:flex;align-items:center;gap:14px;padding:11px 16px;"
+                 f"border-bottom:1px solid #f4f6f1'>"
+                 f"<div style='text-align:center;width:38px;flex-shrink:0'>"
+                 f"<div class='num' style='font-size:16px;font-weight:800;color:#004028;line-height:1'>"
+                 f"{dd.day:02d}</div>"
+                 f"<div style='font-size:8px;font-weight:700;color:#a0aec0;text-transform:uppercase;"
+                 f"letter-spacing:.04em'>{MOIS_ABBR[dd.month-1]}</div></div>"
+                 f"<div style='flex:1'><div style='font-size:12px;font-weight:600;color:#1a202c'>{d['nom']}</div>"
+                 f"<div style='font-size:9.5px;color:#a0aec0'>{d['rate']:.2f}&nbsp;€/action · {d['qte']} titres</div></div>"
+                 f"<div class='num' style='font-size:13px;font-weight:800;color:#0A6E46'>"
+                 f"&#8776;&nbsp;{d['montant']:.0f}&nbsp;€</div></div>")
+    return (f"<div style='font-size:10px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;"
+            f"color:#0A6E46;padding:0 22px 8px'>Prochains dividendes</div>"
+            f"<div class='nobrk' style='margin:0 22px 18px;border:1px solid #e2e8f0;border-radius:12px;"
+            f"overflow:hidden'>{rows}</div>")
+
+
+def build_html(pf, pee_cfg, marche, now, commentary_html=None, history=None, settings=None, dividends=None):
+    settings = settings or {}
     is_friday = now.weekday() == 4
-    chart_html = build_history_chart_html(history) if history else ""
-    ath_html   = build_ath_html(history) if history else ""
     items = [(p, calc(p)) for p in pf]
     tot_inv  = sum(c["invest"] for _, c in items)
     tot_valo = sum(c["valo"]   for _, c in items if c["valo"])
@@ -615,7 +877,6 @@ def build_html(pf, pee_cfg, marche, now, commentary_html=None, history=None):
     tot_sem  = sum(c["semaine"] for _, c in items if c["semaine"])
     tot_mois = sum(c["mois"]    for _, c in items if c["mois"])
     tot_ytd  = sum(c["ytd_pl"]  for _, c in items if c["ytd_pl"])
-
     pl_pct   = tot_pl   / tot_inv * 100 if tot_inv else 0
     jour_pct = tot_jour / (tot_valo - tot_jour) * 100 if tot_valo and tot_jour else 0
     sem_pct  = tot_sem  / (tot_valo - tot_sem)  * 100 if tot_valo and tot_sem  else 0
@@ -626,383 +887,314 @@ def build_html(pf, pee_cfg, marche, now, commentary_html=None, history=None):
     best  = max(with_jour, key=lambda x: x[1]["jour_p"]) if with_jour else None
     worst = min(with_jour, key=lambda x: x[1]["jour_p"]) if with_jour else None
 
-    # ── Répartition dynamique par catégorie ───────────────────────────────────
     alloc = {}
     for p, c in items:
         if c["valo"]:
             cat = position_cat(p)
             alloc[cat] = alloc.get(cat, 0) + c["valo"]
     alloc_tot = sum(alloc.values()) or 1
-    ALLOC_PALETTE = ["#111827", "#6b7280", "#0d9488", "#9333ea", "#ea580c", "#0284c7", "#d1d5db"]
     alloc_sorted = sorted(alloc.items(), key=lambda kv: kv[1], reverse=True)
-    alloc_rows = ""
-    for i, (cat, val) in enumerate(alloc_sorted):
-        color = ALLOC_PALETTE[i % len(ALLOC_PALETTE)]
-        pctg  = val / alloc_tot * 100
-        alloc_rows += (
-            f'<div class="al-r"><div class="al-l">{cat}</div>'
-            f'<div class="al-b"><div class="al-f" style="width:{pctg:.1f}%;background:{color}"></div></div>'
-            f'<div class="al-p" style="color:{color}">{pctg:.1f}%</div>'
-            f'<div class="al-e">{eur(val)}</div></div>'
-        )
 
-    mkt_html = ""
-    for nom, d in marche.items():
-        if d:
-            mkt_html += (f'<div class="mkt-i"><div><div class="mkt-n">{nom}</div>'
-                         f'<div class="mkt-v">{fmt_index(d["val"])}</div></div>'
-                         f'<div class="mkt-c {"up" if d["pct"]>0 else "dn"}">{pct(d["pct"])}</div></div>')
-
-    rows = ""
-    for p, c in items:
-        rows += (f'<tr>'
-                 f'<td class="L"><span class="tn">{p["nom"].split("(")[0].strip()}</span>'
-                 f'<span class="tt">{p["ticker"].replace(".PA","")} · {position_type(p)}</span></td>'
-                 f'<td>{p["qte"]}</td>'
-                 f'<td>{eur(p["pru"])}</td>'
-                 f'<td style="font-weight:600">{eur(p["prix"])}</td>'
-                 f'<td style="color:{col(c["jour"])}">{pct(c["jour_p"])} / {eur(c["jour"],True)}</td>'
-                 f'<td style="color:{col(c["pl"])}">{eur(c["pl"],True)} / {pct(c["pl_pct"])}</td>'
-                 f'<td>{eur(c["valo"])}</td>'
-                 f'</tr>')
-
-    recap_rows = ""
-    for p, c in items:
-        nom_court = p["nom"].split("(")[0].strip()
-        poids = c["valo"] / tot_valo * 100 if tot_valo and c["valo"] else 0
-        recap_rows += (f'<tr>'
-                       f'<td class="L">{nom_court}</td>'
-                       f'<td>{eur(c["invest"])}</td><td>{eur(c["valo"])}</td>'
-                       f'<td style="color:{col(c["pl"])}">{eur(c["pl"],True)}</td>'
-                       f'<td style="color:{col(c["pl_pct"])}">{pct(c["pl_pct"])}</td>'
-                       f'<td style="color:#6b7280;font-weight:600">{poids:.1f}%</td>'
-                       f'</tr>')
-
-    # ── Récap hebdomadaire (vendredi uniquement) ──────────────────────────────
-    hebdo_rows = ""
-    if is_friday:
-        for p, c in items:
-            nom_court = p["nom"].split("(")[0].strip()
-            poids     = c["valo"] / tot_valo * 100 if tot_valo and c["valo"] else 0
-            prix_prec = f'{p["5d"]:.2f} €' if p.get("5d") else "N/A"
-            prix_now  = f'{p["prix"]:.2f} €' if p.get("prix") else "N/A"
-            sem_p     = (p["prix"] - p["5d"]) / p["5d"] * 100 if p.get("prix") and p.get("5d") else None
-            hebdo_rows += (
-                f'<tr>'
-                f'<td class="L">{nom_court}</td>'
-                f'<td style="color:#9ca3af">{prix_prec}</td>'
-                f'<td style="font-weight:600">{prix_now}</td>'
-                f'<td style="color:{col(sem_p)};font-weight:600">{pct(sem_p) if sem_p is not None else "N/A"}</td>'
-                f'<td style="color:{col(c["semaine"])}">{eur(c["semaine"],True) if c["semaine"] is not None else "N/A"}</td>'
-                f'<td style="color:#6b7280;font-weight:600">{poids:.1f}%</td>'
-                f'</tr>'
-            )
-
-    pee      = pee_cfg or {}
-    has_pee  = pee_active(pee)
+    pee     = pee_cfg or {}
+    has_pee = pee_active(pee)
     if has_pee:
         pee_inv  = pee["parts"] * pee["pru"]
         pee_valo = pee["parts"] * pee["vl_last"]
         pee_pl   = pee_valo - pee_inv
         pee_pl_p = pee_pl / pee_inv * 100 if pee_inv else 0
-        pee_j1   = pee["parts"] * (pee["vl_last"] - pee["vl_j2"]) if pee.get("vl_j2") else None
-        # Date de disponibilité lue depuis la config (plus de date en dur)
-        try:
-            dispo = datetime.strptime(pee.get("disponibilite", ""), "%d/%m/%Y").date()
-            jours_restants = (dispo - date.today()).days
-        except (ValueError, TypeError):
-            jours_restants = None
     else:
         pee_inv = pee_valo = pee_pl = pee_pl_p = 0
-        pee_j1 = None
-        jours_restants = None
 
-    total_glob     = tot_valo + pee_valo
-    total_pl_glob  = tot_pl + pee_pl
-    total_inv_glob = tot_inv + pee_inv
-    total_pl_pct   = total_pl_glob / total_inv_glob * 100 if total_inv_glob else 0
+    total_glob    = tot_valo + pee_valo
+    total_pl_glob = tot_pl + pee_pl
+    total_inv     = tot_inv + pee_inv
+    total_pl_pct  = total_pl_glob / total_inv * 100 if total_inv else 0
 
     date_str  = date_fr(now)
     heure_str = now.strftime("%H:%M")
     label     = "Clôture" if now.hour >= 17 else "Ouverture"
+    titre     = "Patrimoine PEA + PEE" if has_pee else "Patrimoine PEA"
+    tg_label  = "Total PEA + PEE" if has_pee else "Patrimoine PEA"
+    arrow_day = "&#9650;" if (tot_jour or 0) >= 0 else "&#9660;"
 
-    best_nom  = best[0]["nom"].split("(")[0].strip() if best else "-"
-    best_pct  = pct(best[1]["jour_p"]) if best else "-"
-    best_eur  = eur(best[1]["jour"], True) if best else ""
-    best_prix = eur(best[0]["prix"]) if best else ""
-    worst_nom = worst[0]["nom"].split("(")[0].strip() if worst else "-"
-    worst_pct = pct(worst[1]["jour_p"]) if worst else "-"
-    worst_eur = eur(worst[1]["jour"], True) if worst else ""
-    worst_prix= eur(worst[0]["prix"]) if worst else ""
+    mark = ("<svg width='18' height='18' viewBox='0 0 24 24' fill='none'>"
+            "<path d='M3 17 L9 11 L13 15 L21 6' stroke='#fff' stroke-width='2.4' "
+            "stroke-linecap='round' stroke-linejoin='round'/>"
+            "<circle cx='21' cy='6' r='2.1' fill='#ADECA2'/></svg>")
+    header = (f"<div style='background:#fff;padding:24px 32px 22px;border-bottom:3px solid #0A6E46'>"
+              f"<div style='display:flex;align-items:flex-start;justify-content:space-between'>"
+              f"<div style='display:flex;align-items:center;gap:12px'>"
+              f"<div style='width:38px;height:38px;border-radius:10px;background:#0A6E46;display:flex;"
+              f"align-items:center;justify-content:center'>{mark}</div>"
+              f"<div><div style='font-size:13px;font-weight:800;color:#004028;letter-spacing:.02em'>PEA · Routine</div>"
+              f"<div style='font-size:9.5px;color:#a0aec0;text-transform:uppercase;letter-spacing:.1em;"
+              f"margin-top:2px'>Rapport quotidien</div></div></div>"
+              f"<div style='text-align:right'><div style='font-size:10px;color:#a0aec0;text-transform:uppercase;"
+              f"letter-spacing:.08em'>{date_str}</div>"
+              f"<div style='font-size:11px;color:#718096;font-weight:600;margin-top:2px'>{label} · {heure_str}</div></div></div>"
+              f"<div style='display:flex;align-items:flex-end;justify-content:space-between;margin-top:16px'>"
+              f"<div style='font-size:24px;font-weight:800;color:#004028;letter-spacing:-.015em;"
+              f"white-space:nowrap'>{titre}</div>"
+              f"<div style='display:inline-flex;align-items:center;gap:5px;background:#eafaef;border-radius:20px;"
+              f"padding:5px 12px'><span style='color:{col(tot_jour)};font-size:10px'>{arrow_day}</span>"
+              f"<span class='num' style='font-size:12px;font-weight:700;color:{col(tot_jour)}'>"
+              f"{pct(jour_pct)} aujourd'hui</span></div></div></div>")
 
-    # ── Titre & total : adaptés selon présence du PEE ─────────────────────────
-    titre    = "Rapport P&amp;L · PEA" + (" + PEE" if has_pee else "")
-    tg_label = "Total PEA + PEE" if has_pee else "Patrimoine PEA"
+    kpi = (f"<div class='nobrk' style='display:flex;border-bottom:1px solid #eef2f0'>"
+           f"<div style='flex:1;padding:18px 22px;border-right:1px solid #eef2f0'>"
+           f"<div style='font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;"
+           f"color:#a0aec0;margin-bottom:6px'>Valorisation PEA</div>"
+           f"<div class='num' style='font-size:22px;font-weight:800;color:#004028'>{eur(tot_valo)}</div>"
+           f"<div style='font-size:11.5px;color:#a0aec0;margin-top:3px'>investi {eur(tot_inv)}</div></div>"
+           f"<div style='flex:1;padding:18px 22px;border-right:1px solid #eef2f0'>"
+           f"<div style='font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;"
+           f"color:#a0aec0;margin-bottom:6px'>P&amp;L du jour</div>"
+           f"<div class='num' style='font-size:22px;font-weight:800;color:{col(tot_jour)}'>{eur(tot_jour, True)}</div>"
+           f"<div class='num' style='font-size:11.5px;color:{col(tot_jour)};margin-top:3px;font-weight:600'>{pct(jour_pct)}</div></div>"
+           f"<div style='flex:1;padding:18px 22px'>"
+           f"<div style='font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;"
+           f"color:#a0aec0;margin-bottom:6px'>P&amp;L total PEA</div>"
+           f"<div class='num' style='font-size:22px;font-weight:800;color:{col(tot_pl)}'>{eur(tot_pl, True)}</div>"
+           f"<div class='num' style='font-size:11.5px;color:{col(pl_pct)};margin-top:3px;font-weight:600'>{pct(pl_pct)}</div></div></div>")
 
-    # ── Bloc PEE complet (rendu uniquement si un PEE est configuré) ────────────
-    if has_pee:
-        if jours_restants is not None:
-            dispo_card = f'''<div class="cd">
-  <div class="cd-l">Disponibilité du PEE
-    <span>Fonds bloqués jusqu'au {pee.get("disponibilite","")}</span></div>
-  <div class="cd-r">
-    <div class="cd-d" style="color:#0f766e">{jours_restants} jours</div>
-    <div class="cd-s">environ {jours_restants//365} ans restants</div>
-  </div>
-</div>'''
+    mkt_items = [(nom, d) for nom, d in marche.items() if d]
+    mkt = ""
+    for i, (nom, d) in enumerate(mkt_items):
+        if i == 0:
+            pad = "padding-right:10px;border-right:1px solid #e6ecdb;"
+        elif i == len(mkt_items) - 1:
+            pad = "padding-left:10px;"
         else:
-            dispo_card = ""
-        pee_section = f'''<div class="ps"><div class="pl"></div><div class="pt">Plan d'Épargne Entreprise</div><div class="pl"></div></div>
-<div class="kpi-row" style="background:#fafffe">
-  <div class="kpi"><div class="kpi-l">Valorisation PEE</div>
-    <div class="kpi-v" style="color:#0f766e">{eur(pee_valo)}</div>
-    <div class="kpi-s mu">investi {eur(pee_inv)}</div></div>
-  <div class="kpi"><div class="kpi-l">Var. J-1 (dernière VL)</div>
-    <div class="kpi-v" style="color:{col(pee_j1)}">{eur(pee_j1,True) if pee_j1 else "N/A"}</div>
-    <div class="kpi-s mu">VL {pee["vl_last"]:.2f} € au {pee["vl_date"]}</div></div>
-  <div class="kpi"><div class="kpi-l">P&amp;L total PEE</div>
-    <div class="kpi-v" style="color:{col(pee_pl)}">{eur(pee_pl,True)}</div>
-    <div class="kpi-s" style="color:{col(pee_pl_p)}">{pct(pee_pl_p)}</div></div>
-</div>
-<div class="sec">Positions PEE</div>
-<div class="tw">
-  <table>
-    <colgroup><col style="width:38%"><col style="width:12%"><col style="width:13%">
-      <col style="width:13%"><col style="width:12%"><col style="width:12%"></colgroup>
-    <thead><tr><th class="L">Fonds</th><th>Parts</th><th>PRU</th><th>VL</th>
-      <th>Latent €</th><th>Latent %</th></tr></thead>
-    <tbody><tr>
-      <td class="L"><span class="tn">{pee.get("nom","Fonds PEE")}</span>
-        <span class="tt">FCPE · Dispo {pee.get("disponibilite","")}</span></td>
-      <td>{pee["parts"]}</td><td>{eur(pee["pru"])}</td>
-      <td>{pee["vl_last"]:.2f} €<br><span style="font-size:9px;color:#d1d5db">au {pee["vl_date"]}</span></td>
-      <td style="color:{col(pee_pl)}">{eur(pee_pl,True)}</td>
-      <td style="color:{col(pee_pl_p)}">{pct(pee_pl_p)}</td>
-    </tr></tbody>
-    <tfoot><tr><td class="L" colspan="4" style="color:#0f766e">Total PEE</td>
-      <td style="color:{col(pee_pl)}">{eur(pee_pl,True)}</td>
-      <td style="color:{col(pee_pl_p)}">{pct(pee_pl_p)}</td></tr></tfoot>
-  </table>
-</div>
-{dispo_card}'''
-    else:
-        pee_section = ""
+            pad = "padding:0 10px;border-right:1px solid #e6ecdb;"
+        mc = "#0A6E46" if d["pct"] > 0 else "#e07644"
+        mkt += (f"<div style='flex:1;{pad}'><div style='font-size:9.5px;font-weight:600;color:#718096'>{nom}</div>"
+                f"<div class='num' style='font-size:11.5px;font-weight:700;color:#1a202c;margin-top:1px'>"
+                f"{fmt_index(d['val'])} <span style='color:{mc};font-size:10px'>{pct(d['pct'])}</span></div></div>")
+    mkt_wrap = (f"<div class='nobrk' style='display:flex;background:#F6F9EE;padding:11px 22px;"
+                f"border-bottom:1px solid #eef2f0'>{mkt}</div>")
 
-    return f"""<!DOCTYPE html>
-<html lang="fr"><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="light">
-<meta name="supported-color-schemes" content="light">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<style>:root{{color-scheme:light only}}{CSS}</style></head>
-<body><div class="w">
-<div class="hdr">
-  <div class="hdr-date">{date_str} · {label} {heure_str}</div>
-  <div class="hdr-title">{titre}</div>
-</div>
-<div class="kpi-row">
-  <div class="kpi"><div class="kpi-l">Valorisation PEA</div>
-    <div class="kpi-v">{eur(tot_valo)}</div>
-    <div class="kpi-s mu">investi {eur(tot_inv)}</div></div>
-  <div class="kpi"><div class="kpi-l">P&amp;L du jour</div>
-    <div class="kpi-v" style="color:{col(tot_jour)}">{eur(tot_jour,True)}</div>
-    <div class="kpi-s" style="color:{col(tot_jour)}">{pct(jour_pct)}</div></div>
-  <div class="kpi"><div class="kpi-l">P&amp;L total PEA</div>
-    <div class="kpi-v" style="color:{col(tot_pl)}">{eur(tot_pl,True)}</div>
-    <div class="kpi-s" style="color:{col(pl_pct)}">{pct(pl_pct)}</div></div>
-</div>
-<div class="mkt">{mkt_html}</div>
-<div class="bw">
-  <div class="bw-c">
-    <div class="bw-t up">Best du jour</div>
-    <div class="bw-n">{best_nom}</div>
-    <div class="bw-p up">{best_pct}</div>
-    <div class="bw-d">{best_eur} · cours {best_prix}</div>
-  </div>
-  <div class="bw-c">
-    <div class="bw-t dn">Worst du jour</div>
-    <div class="bw-n">{worst_nom}</div>
-    <div class="bw-p dn">{worst_pct}</div>
-    <div class="bw-d">{worst_eur} · cours {worst_prix}</div>
-  </div>
-</div>
-<div class="sec">Performance sur les périodes</div>
-<div class="per">
-  <div class="per-c"><div class="per-l">Semaine</div>
-    <div class="per-v" style="color:{col(sem_pct)}">{pct(sem_pct)}</div>
-    <div class="per-s" style="color:{col(tot_sem)}">{eur(tot_sem,True)}</div></div>
-  <div class="per-c"><div class="per-l">Mois</div>
-    <div class="per-v" style="color:{col(mois_pct)}">{pct(mois_pct)}</div>
-    <div class="per-s" style="color:{col(tot_mois)}">{eur(tot_mois,True)}</div></div>
-  <div class="per-c"><div class="per-l">YTD {now.year}</div>
-    <div class="per-v" style="color:{col(ytd_pct)}">{pct(ytd_pct)}</div>
-    <div class="per-s" style="color:{col(tot_ytd)}">{eur(tot_ytd,True)}</div></div>
-  <div class="per-c"><div class="per-l">Depuis achat</div>
-    <div class="per-v" style="color:{col(pl_pct)}">{pct(pl_pct)}</div>
-    <div class="per-s" style="color:{col(tot_pl)}">{eur(tot_pl,True)}</div></div>
-</div>
-<div class="sec">Répartition du portefeuille PEA</div>
-<div class="alloc">{alloc_rows}</div>
-<div class="sec">Positions PEA</div>
-<div class="tw">
-  <table>
-    <colgroup><col style="width:28%"><col style="width:6%"><col style="width:10%">
-      <col style="width:10%"><col style="width:18%"><col style="width:17%"><col style="width:11%"></colgroup>
-    <thead><tr><th class="L">Valeur</th><th>Qté</th><th>PRU</th><th>Cours</th>
-      <th>Var. jour</th><th>+/− latent</th><th>Valo</th></tr></thead>
-    <tbody>{rows}</tbody>
-    <tfoot><tr><td class="L" colspan="4">Total PEA</td>
-      <td style="color:{col(tot_jour)}">{eur(tot_jour,True)}</td>
-      <td style="color:{col(tot_pl)}">{eur(tot_pl,True)} / {pct(pl_pct)}</td>
-      <td>{eur(tot_valo)}</td></tr></tfoot>
-  </table>
-</div>
-<div class="sec" style="padding-top:14px">Performance depuis ouverture de position</div>
-<div class="tw">
-  <table>
-    <colgroup><col style="width:28%"><col style="width:14%"><col style="width:14%">
-      <col style="width:14%"><col style="width:16%"><col style="width:14%"></colgroup>
-    <thead><tr><th class="L">Valeur</th><th>Investi</th><th>Valo</th>
-      <th>Gain €</th><th>Gain %</th><th>Poids</th></tr></thead>
-    <tbody>{recap_rows}</tbody>
-  </table>
-</div>
-{pee_section}
-<div class="tg">
-  <div><div class="tg-l">{tg_label}</div><div class="tg-v">{eur(total_glob)}</div></div>
-  <div class="tg-r"><div class="tg-l">P&amp;L global depuis ouverture</div>
-    <div class="tg-p">{eur(total_pl_glob,True)}</div>
-    <div class="tg-s">{pct(total_pl_pct)}</div></div>
-</div>
-{ath_html}
-{chart_html}
-{f'''<div class="sec" style="padding-top:18px">Récap de la semaine</div>
-<div class="tw">
-  <table>
-    <colgroup><col style="width:26%"><col style="width:13%"><col style="width:13%">
-      <col style="width:13%"><col style="width:18%"><col style="width:17%"></colgroup>
-    <thead><tr>
-      <th class="L">Valeur</th>
-      <th>Ven. passé</th>
-      <th>Aujourd'hui</th>
-      <th>Sem. %</th>
-      <th>P&L semaine</th>
-      <th>Poids</th>
-    </tr></thead>
-    <tbody>{hebdo_rows}</tbody>
-    <tfoot><tr>
-      <td class="L" colspan="3">Total PEA - semaine</td>
-      <td style="color:{col(sem_pct)};font-weight:700">{pct(sem_pct)}</td>
-      <td style="color:{col(tot_sem)}">{eur(tot_sem,True)}</td>
-      <td></td>
-    </tr></tfoot>
-  </table>
-</div>''' if is_friday else ''}
-{f'''<div class="note">
-  <div class="note-hdr">
-    <div class="note-hdr-icon">📋</div>
-    <div class="note-hdr-left">
-      <div class="note-hdr-title">Note de marché</div>
-      <div class="note-hdr-sub">{date_str} · {heure_str}</div>
-    </div>
-    <div class="note-hdr-badge">Analyse IA</div>
-  </div>
-  <div class="note-body">{commentary_html}</div>
-  <div class="note-sig">Analyse générée par Claude · Yahoo Finance · {heure_str}</div>
-</div>''' if commentary_html else ''}
-<div class="ftr">Yahoo Finance · GitHub Actions · Ne pas répondre</div>
-</div></body></html>"""
+    if best:
+        best_html = (f"<div style='flex:1;border:1px solid #e2e8f0;border-left:3px solid #54C77A;border-radius:9px;"
+                     f"padding:12px 15px'><div style='font-size:9px;font-weight:700;letter-spacing:.1em;"
+                     f"text-transform:uppercase;color:#0A6E46'>&#9650; Best du jour</div>"
+                     f"<div style='font-size:13px;font-weight:700;color:#1a202c;margin-top:6px'>"
+                     f"{best[0]['nom'].split('(')[0].strip()}</div>"
+                     f"<div class='num' style='font-size:16px;font-weight:800;color:#0A6E46;margin-top:1px'>"
+                     f"{pct(best[1]['jour_p'])}</div>"
+                     f"<div class='num' style='font-size:10.5px;color:#a0aec0;margin-top:2px'>"
+                     f"{eur(best[1]['jour'], True)} · cours {eur(best[0]['prix'])}</div></div>")
+    else:
+        best_html = "<div style='flex:1'></div>"
+    if worst:
+        worst_html = (f"<div style='flex:1;border:1px solid #e2e8f0;border-left:3px solid #e07644;border-radius:9px;"
+                      f"padding:12px 15px'><div style='font-size:9px;font-weight:700;letter-spacing:.1em;"
+                      f"text-transform:uppercase;color:#e07644'>&#9660; Worst du jour</div>"
+                      f"<div style='font-size:13px;font-weight:700;color:#1a202c;margin-top:6px'>"
+                      f"{worst[0]['nom'].split('(')[0].strip()}</div>"
+                      f"<div class='num' style='font-size:16px;font-weight:800;color:#e07644;margin-top:1px'>"
+                      f"{pct(worst[1]['jour_p'])}</div>"
+                      f"<div class='num' style='font-size:10.5px;color:#a0aec0;margin-top:2px'>"
+                      f"{eur(worst[1]['jour'], True)} · cours {eur(worst[0]['prix'])}</div></div>")
+    else:
+        worst_html = "<div style='flex:1'></div>"
+    bw = (f"<div class='nobrk' style='display:flex;gap:12px;padding:16px 22px;border-bottom:1px solid #eef2f0'>"
+          f"{best_html}{worst_html}</div>")
+
+    contrib = build_contribution(items, tot_jour)
+
+    def per_cell(lbl, pv, ev):
+        return (f"<div style='flex:1;background:#F6F9EE;border-radius:9px;padding:11px 8px;text-align:center'>"
+                f"<div style='font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;"
+                f"color:#a0aec0;margin-bottom:5px'>{lbl}</div>"
+                f"<div class='num' style='font-size:14px;font-weight:800;color:{col(ev)}'>{pct(pv)}</div>"
+                f"<div class='num' style='font-size:10px;color:#718096;margin-top:2px'>{eur(ev, True)}</div></div>")
+    periods = (f"<div style='font-size:10px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;"
+               f"color:#0A6E46;padding:16px 22px 8px'>Performance sur les périodes</div>"
+               f"<div class='nobrk' style='display:flex;gap:9px;padding:0 22px 16px'>"
+               + per_cell("Semaine", sem_pct, tot_sem)
+               + per_cell("Mois", mois_pct, tot_mois)
+               + per_cell(f"YTD {now.year}", ytd_pct, tot_ytd)
+               + per_cell("Depuis achat", pl_pct, tot_pl) + "</div>")
+
+    chart_html = build_chart_svg(history)
+    ath_html   = build_ath_ministat(history)
+
+    rows = ""
+    for p, c in items:
+        nom = p["nom"].split("(")[0].strip()
+        rows += (f"<tr>"
+                 f"<td style='text-align:left;padding:9px 4px;border-bottom:1px solid #f4f6f1'>"
+                 f"<span style='font-weight:600;color:#1a202c'>{nom}</span>"
+                 f"<span style='display:block;font-size:9.5px;color:#a0aec0'>"
+                 f"{p['ticker'].replace('.PA','')} · {position_type(p)}</span></td>"
+                 f"<td style='text-align:right;padding:9px 4px;border-bottom:1px solid #f4f6f1;color:#4a5568'>{p['qte']}</td>"
+                 f"<td style='text-align:right;padding:9px 4px;border-bottom:1px solid #f4f6f1;font-weight:600;color:#1a202c'>{eur(p['prix'])}</td>"
+                 f"<td style='text-align:right;padding:9px 4px;border-bottom:1px solid #f4f6f1;color:{col(c['jour'])};white-space:nowrap'>{pct(c['jour_p'])}</td>"
+                 f"<td style='text-align:right;padding:9px 4px;border-bottom:1px solid #f4f6f1;color:{col(c['pl'])};white-space:nowrap'>{eur(c['pl'], True)} · {pct(c['pl_pct'])}</td>"
+                 f"<td style='text-align:right;padding:9px 4px;border-bottom:1px solid #f4f6f1;color:#4a5568'>{eur(c['valo'])}</td></tr>")
+    th = "text-align:right;padding:7px 4px;font-size:9px;font-weight:700;text-transform:uppercase;color:#a0aec0;border-bottom:1px solid #e2e8f0"
+    tf = "padding:10px 4px;border-top:2px solid #e2e8f0;font-weight:700"
+    pos_table = (f"<div style='font-size:10px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;"
+                 f"color:#0A6E46;padding:6px 22px 6px'>Positions PEA</div>"
+                 f"<div style='padding:0 22px 4px'><table class='num' style='width:100%;border-collapse:collapse;"
+                 f"font-size:11.5px;table-layout:fixed'>"
+                 f"<colgroup><col style='width:27%'><col style='width:7%'><col style='width:12%'>"
+                 f"<col style='width:16%'><col style='width:21%'><col style='width:17%'></colgroup>"
+                 f"<thead><tr><th style='text-align:left;padding:7px 4px;font-size:9px;font-weight:700;"
+                 f"text-transform:uppercase;color:#a0aec0;border-bottom:1px solid #e2e8f0'>Valeur</th>"
+                 f"<th style='{th}'>Qté</th><th style='{th}'>Cours</th><th style='{th}'>Var. jour</th>"
+                 f"<th style='{th}'>+/- latent</th><th style='{th}'>Valo</th></tr></thead>"
+                 f"<tbody>{rows}</tbody>"
+                 f"<tfoot><tr><td colspan='3' style='text-align:left;{tf};color:#004028'>Total PEA</td>"
+                 f"<td style='text-align:right;{tf};color:{col(tot_jour)};white-space:nowrap'>{eur(tot_jour, True)}</td>"
+                 f"<td style='text-align:right;{tf};color:{col(tot_pl)};white-space:nowrap'>{eur(tot_pl, True)} · {pct(pl_pct)}</td>"
+                 f"<td style='text-align:right;{tf};color:#004028;white-space:nowrap'>{eur(tot_valo)}</td></tr></tfoot></table></div>")
+    stacked = build_stacked_alloc(alloc_sorted, alloc_tot)
+
+    divider = ("<div class='pb' style='display:flex;align-items:center;gap:12px;padding:8px 22px 16px'>"
+               "<div style='flex:1;height:1px;background:#eef2f0'></div>"
+               "<div style='font-size:9px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;"
+               "color:#0A6E46'>Patrimoine &amp; horizon</div>"
+               "<div style='flex:1;height:1px;background:#eef2f0'></div></div>")
+
+    total_card = (f"<div class='nobrk' style='margin:0 22px 16px;padding:18px 24px;background:#fff;"
+                  f"border:1px solid #e2e8f0;border-bottom:3px solid #0A6E46;border-radius:13px;display:flex;"
+                  f"justify-content:space-between;align-items:center'>"
+                  f"<div><div style='font-size:9.5px;color:#a0aec0;text-transform:uppercase;letter-spacing:.1em;"
+                  f"margin-bottom:5px;font-weight:700'>{tg_label}</div>"
+                  f"<div class='num' style='font-size:26px;font-weight:800;color:#004028;letter-spacing:-.015em'>"
+                  f"{eur(total_glob)}</div></div>"
+                  f"<div style='text-align:right'><div style='font-size:9.5px;color:#a0aec0;text-transform:uppercase;"
+                  f"letter-spacing:.08em;margin-bottom:5px;font-weight:700'>P&amp;L global</div>"
+                  f"<div class='num' style='font-size:19px;font-weight:800;color:{col(total_pl_glob)}'>"
+                  f"{eur(total_pl_glob, True)}</div>"
+                  f"<div class='num' style='font-size:11px;color:{col(total_pl_glob)};margin-top:1px'>"
+                  f"{pct(total_pl_pct)}</div></div></div>")
+
+    objectif = build_objectif(total_glob, settings)
+
+    pee_card = ""
+    if has_pee:
+        pee_card = (f"<div style='flex:1;padding:14px 16px;background:#F6F9EE;border-radius:11px'>"
+                    f"<div style='font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;"
+                    f"color:#0A6E46'>Plan d'Épargne Entreprise</div>"
+                    f"<div style='font-size:12.5px;font-weight:600;color:#1a202c;margin-top:6px'>"
+                    f"{pee.get('nom', 'Fonds PEE')}</div>"
+                    f"<div class='num' style='font-size:16px;font-weight:800;color:#004028;margin-top:5px'>"
+                    f"{eur(pee_valo)} <span style='font-size:11px;font-weight:700;color:{col(pee_pl)}'>"
+                    f"{pct(pee_pl_p)}</span></div>"
+                    f"<div style='font-size:9.5px;color:#a0aec0;margin-top:4px'>FCPE · dispo "
+                    f"{pee.get('disponibilite', '')}</div></div>")
+    fiscal = build_fiscal(settings, now)
+    horizon = ""
+    cards = pee_card + (fiscal or "")
+    if cards:
+        horizon = f"<div class='nobrk' style='display:flex;gap:12px;margin:0 22px 18px'>{cards}</div>"
+
+    dividends_html = build_dividendes(dividends)
+
+    weekly = ""
+    if is_friday:
+        wrows = ""
+        for p, c in items:
+            nom = p["nom"].split("(")[0].strip()
+            prix_prec = f"{p['5d']:.2f}&nbsp;€" if p.get("5d") else "N/A"
+            prix_now  = f"{p['prix']:.2f}&nbsp;€" if p.get("prix") else "N/A"
+            sem_p = (p["prix"] - p["5d"]) / p["5d"] * 100 if p.get("prix") and p.get("5d") else None
+            semp_txt = pct(sem_p) if sem_p is not None else "N/A"
+            seme_txt = eur(c["semaine"], True) if c["semaine"] is not None else "N/A"
+            wrows += (f"<tr><td style='text-align:left;padding:8px 4px;border-bottom:1px solid #f4f6f1;"
+                      f"font-weight:600;color:#1a202c'>{nom}</td>"
+                      f"<td style='text-align:right;padding:8px 4px;border-bottom:1px solid #f4f6f1;color:#a0aec0'>{prix_prec}</td>"
+                      f"<td style='text-align:right;padding:8px 4px;border-bottom:1px solid #f4f6f1;font-weight:600'>{prix_now}</td>"
+                      f"<td style='text-align:right;padding:8px 4px;border-bottom:1px solid #f4f6f1;color:{col(sem_p)};font-weight:600'>{semp_txt}</td>"
+                      f"<td style='text-align:right;padding:8px 4px;border-bottom:1px solid #f4f6f1;color:{col(c['semaine'])}'>{seme_txt}</td></tr>")
+        weekly = (f"<div style='font-size:10px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;"
+                  f"color:#0A6E46;padding:6px 22px 6px'>Récap de la semaine</div>"
+                  f"<div style='padding:0 22px 6px'><table class='num' style='width:100%;border-collapse:collapse;"
+                  f"font-size:11.5px;table-layout:fixed'>"
+                  f"<colgroup><col style='width:34%'><col style='width:16%'><col style='width:16%'>"
+                  f"<col style='width:17%'><col style='width:17%'></colgroup>"
+                  f"<thead><tr><th style='text-align:left;padding:7px 4px;font-size:9px;font-weight:700;"
+                  f"text-transform:uppercase;color:#a0aec0;border-bottom:1px solid #e2e8f0'>Valeur</th>"
+                  f"<th style='{th}'>Ven. passé</th><th style='{th}'>Auj.</th><th style='{th}'>Sem.&nbsp;%</th>"
+                  f"<th style='{th}'>P&amp;L sem.</th></tr></thead><tbody>{wrows}</tbody></table></div>")
+
+    note = ""
+    if commentary_html:
+        note = (f"<div class='nobrk' style='margin:0 22px 18px;border-radius:13px;overflow:hidden;"
+                f"border:1px solid #e2e8f0'>"
+                f"<div style='background:#fff;padding:15px 18px;display:flex;align-items:center;gap:11px;"
+                f"border-bottom:3px solid #0A6E46'>"
+                f"<div style='width:32px;height:32px;border-radius:9px;background:#eafaef;display:flex;"
+                f"align-items:center;justify-content:center;font-size:15px'>&#128203;</div>"
+                f"<div style='flex:1'><div style='font-size:10px;font-weight:800;letter-spacing:.14em;"
+                f"text-transform:uppercase;color:#004028'>Note de marché</div>"
+                f"<div style='font-size:9.5px;color:#a0aec0;margin-top:2px'>{date_str} · {heure_str}</div></div>"
+                f"<div style='font-size:8.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;"
+                f"background:#eafaef;color:#0A6E46;padding:4px 9px;border-radius:12px'>Analyse IA</div></div>"
+                f"<div class='note-p' style='padding:17px 19px;font-size:12.5px;line-height:1.72;color:#374151'>"
+                f"{commentary_html}</div>"
+                f"<div style='padding:9px 19px;background:#f4f6f1;border-top:1px solid #e6ecdb;font-size:9px;"
+                f"color:#a0aec0;text-align:right'>Analyse générée par Claude · Yahoo Finance · {heure_str}</div></div>")
+
+    footer = ("<div style='padding:13px;text-align:center;font-size:9.5px;color:#cbd5e0;"
+              "border-top:1px solid #f4f6f1'>Yahoo Finance · GitHub Actions · Ne pas répondre</div>")
+
+    preheader = f"Valorisation {eur(tot_valo)} · P&L total {eur(tot_pl, True)} ({pct(pl_pct)}) · {tg_label} {eur(total_glob)}"
+
+    font_link = ("<link href='https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:"
+                 "wght@400;500;600;700;800&display=swap' rel='stylesheet'>")
+    style = ("<style>"
+             "*{box-sizing:border-box;margin:0;padding:0}"
+             "body{background:#f1f3f5;padding:24px 12px;font-family:'Plus Jakarta Sans','Inter',"
+             "-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#1a202c;"
+             "-webkit-font-smoothing:antialiased}"
+             ".num{font-variant-numeric:tabular-nums}"
+             ".up{color:#0A6E46}.dn{color:#e07644}"
+             ".note-p p{margin:0 0 10px 0}.note-p p:last-child{margin-bottom:0}"
+             "@media only screen and (max-width:600px){body{padding:0 !important;background:#fff !important}"
+             "#report{border:none !important;border-radius:0 !important}}"
+             "</style>")
+
+    body = (header + kpi + mkt_wrap + bw + contrib + periods + chart_html + ath_html + pos_table + stacked
+            + divider + total_card + objectif + horizon + dividends_html + weekly + note + footer)
+
+    return (f"<!DOCTYPE html><html lang='fr'><head><meta charset='UTF-8'>"
+            f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            f"<meta name='color-scheme' content='light'><meta name='supported-color-schemes' content='light'>"
+            f"{font_link}{style}</head><body>"
+            f"<div style='display:none;max-height:0;overflow:hidden;opacity:0'>{preheader}</div>"
+            f"<div id='report' style='max-width:700px;margin:0 auto;background:#fff;border:1px solid #e2e8f0;"
+            f"border-radius:14px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06)'>{body}</div>"
+            f"</body></html>")
 
 
 def generate_pdf(html_body):
+    """PDF via WeasyPrint. Le design est en styles inline ; la feuille print ne
+    gere que la geometrie de page et les coupures (saut de page au separateur
+    'Patrimoine & horizon', anti-coupure des cartes via .nobrk)."""
     try:
         from weasyprint import HTML, CSS
         import logging
         logging.getLogger("weasyprint").setLevel(logging.ERROR)
 
+        # On retire le lien Google Fonts (offline-safe) -> repli police systeme.
         html_pdf = html_body.replace(
-            '<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">',
-            ""
-        ).replace(
-            "font-family:'Inter',-apple-system,sans-serif",
-            "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif"
-        )
+            "<link href='https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:"
+            "wght@400;500;600;700;800&display=swap' rel='stylesheet'>", "")
 
-        pdf_css = CSS(string="""
-            @page {
-                size: A4;
-                margin: 1.2cm 1.8cm;
-            }
-            body {
-                padding: 0 !important;
-                background: #fff !important;
-            }
-            .w {
-                max-width: 100% !important;
-                border-radius: 0 !important;
-                border: none !important;
-            }
-
-            /* ── Anti-coupure entre pages ── */
-            tr           { break-inside: avoid; page-break-inside: avoid; }
-            thead        { display: table-header-group; }
-            tfoot        { display: table-footer-group; }
-            .bw, .bw-c  { break-inside: avoid; page-break-inside: avoid; }
-            .kpi-row     { break-inside: avoid; page-break-inside: avoid; }
-            .per, .per-c { break-inside: avoid; page-break-inside: avoid; }
-            .alloc, .al-r{ break-inside: avoid; page-break-inside: avoid; }
-            .cd, .tg     { break-inside: avoid; page-break-inside: avoid; }
-            .ps          { break-inside: avoid; page-break-inside: avoid; break-after: avoid; page-break-after: avoid; }
-
-            .hdr { padding: 28px 36px 22px !important; }
-            .hdr-date { font-size: 13px !important; margin-bottom: 7px !important; }
-            .hdr-title { font-size: 26px !important; }
-            .kpi { padding: 22px 26px !important; }
-            .kpi-l { font-size: 11px !important; margin-bottom: 6px !important; }
-            .kpi-v { font-size: 24px !important; }
-            .kpi-s { font-size: 13px !important; margin-top: 4px !important; }
-            .mkt { padding: 13px 26px !important; }
-            .mkt-n { font-size: 11px !important; }
-            .mkt-v { font-size: 13px !important; }
-            .mkt-c { font-size: 12px !important; }
-            .alert-ok, .alert-w { padding: 12px 26px !important; font-size: 13px !important; }
-            .bw { padding: 18px 26px !important; gap: 14px !important; }
-            .bw-c { padding: 16px 20px !important; }
-            .bw-t { font-size: 10px !important; margin-bottom: 8px !important; }
-            .bw-n { font-size: 15px !important; }
-            .bw-p { font-size: 22px !important; margin-top: 4px !important; }
-            .bw-d { font-size: 12px !important; margin-top: 4px !important; }
-            .sec { padding: 20px 26px 8px !important; font-size: 10px !important; letter-spacing: 2.5px !important; }
-            .per { padding: 0 26px 18px !important; gap: 12px !important; }
-            .per-c { padding: 16px 14px !important; }
-            .per-l { font-size: 10px !important; margin-bottom: 6px !important; }
-            .per-v { font-size: 17px !important; }
-            .per-s { font-size: 12px !important; margin-top: 3px !important; }
-            .alloc { padding: 0 26px 20px !important; }
-            .al-r { margin-bottom: 12px !important; }
-            .al-l { font-size: 13px !important; width: 150px !important; }
-            .al-b { height: 7px !important; }
-            .al-p { font-size: 13px !important; }
-            .al-e { font-size: 12px !important; }
-            .tw { padding: 0 26px 8px !important; }
-            table { font-size: 13px !important; }
-            thead th { padding: 9px 6px !important; font-size: 10px !important; }
-            tbody td { padding: 12px 6px !important; }
-            tfoot td { padding: 12px 6px !important; font-size: 13px !important; }
-            .tn { font-size: 14px !important; }
-            .tt { font-size: 11px !important; margin-top: 2px !important; }
-            .ps { padding: 20px 26px !important; }
-            .cd { margin: 0 26px 20px !important; padding: 18px 22px !important; }
-            .cd-l { font-size: 13px !important; }
-            .cd-d { font-size: 26px !important; }
-            .cd-s { font-size: 11px !important; }
-            .tg { margin: 18px 26px 22px !important; padding: 22px 26px !important; }
-            .tg-l { font-size: 10px !important; margin-bottom: 6px !important; }
-            .tg-v { font-size: 28px !important; }
-            .tg-p { font-size: 24px !important; }
-            .tg-s { font-size: 12px !important; }
-            .ftr { padding: 16px !important; font-size: 11px !important; }
-        """)
+        pdf_css = CSS(string=(
+            "@page{size:A4;margin:1.1cm 1.4cm}"
+            "body{background:#fff !important;padding:0 !important}"
+            "#report{max-width:none !important;border:none !important;"
+            "border-radius:0 !important;box-shadow:none !important}"
+            ".pb{break-before:page;page-break-before:always}"
+            ".nobrk{break-inside:avoid;page-break-inside:avoid}"
+            "tr{break-inside:avoid;page-break-inside:avoid}"
+            "thead{display:table-header-group}"
+            "table{break-inside:auto}"
+        ))
 
         pdf = HTML(string=html_pdf).write_pdf(stylesheets=[pdf_css])
         print(f"[PDF] Généré - {len(pdf):,} octets", flush=True)
@@ -1183,7 +1375,9 @@ def run():
         print("[Commentary] Vendredi détecté - génération de la note de marché…", flush=True)
         commentary = generate_commentary(pf, mkt, now)
 
-    html  = build_html(pf, PEE, mkt, now, commentary_html=commentary, history=history)
+    dividends = fetch_dividends(pf)
+    html  = build_html(pf, PEE, mkt, now, commentary_html=commentary,
+                       history=history, settings=SETTINGS, dividends=dividends)
     text  = build_text(pf, PEE, mkt, now, commentary_html=commentary)
     heure = "Ouverture" if now.hour < 12 else "Clôture"
     subj  = f"PEA P&L - {now.strftime('%d/%m/%Y')} {heure}"
