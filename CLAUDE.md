@@ -82,6 +82,12 @@ python3 position.py vente TTE.PA 5
 ```
 
 `test_commentary.py` force un vendredi pour tester le récap hebdo + commentaire.
+`test_nan.py` simule yfinance (sans réseau) : barre du jour à `NaN`, jour férié,
+panne totale de cotation. À lancer après toute modif de `fetch_pea`/`calc`/`history` :
+
+```bash
+GMAIL_USER=x GMAIL_PASSWORD=x GMAIL_DEST=x python3 test_nan.py
+```
 
 ## Conventions & pièges
 
@@ -95,6 +101,14 @@ python3 position.py vente TTE.PA 5
 - **Nettoyage du commentaire** : le modèle insère des `\n` intra-phrase ; le code
   protège les `\n\n` (sentinelle `\x00`), aplatit le reste, refusionne les
   paragraphes commençant en minuscule, et filtre le préambule méta.
+- **NaN yfinance** : Yahoo publie la barre du jour *avant* la première
+  cotation (pré-ouverture, week-end, jour férié) avec `Close = NaN`. Comme
+  `bool(float('nan')) is True`, un NaN traverse tous les tests `if prix` et
+  contamine les totaux (`nan €` dans le mail, `nan` dans `history.csv`).
+  Toute valeur venant de yfinance doit passer par `_num()` ; `fetch_pea()` et
+  `fetch_marche()` purgent les lignes `Close` nulles, `append_history()`
+  refuse un snapshot non fini, et `etat_marche()` déclenche le bandeau
+  « Marché fermé » du rapport.
 - **Catégories** : `position_cat(p)` lit le champ `cat` de chaque position ; le
   graphe de répartition et le badge ETF/Action en dépendent (dynamiques).
 - **Coût IA** : ≈ 0,10-0,15 € par note (≈ 0,03 € de sortie pour 2000 tokens +

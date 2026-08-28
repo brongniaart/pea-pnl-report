@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Routine quotidienne P&L PEA + PEE - Design minimaliste."""
-import smtplib, warnings, os, json, csv
+import smtplib, warnings, os, json, csv, math
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 from email.mime.multipart import MIMEMultipart
@@ -97,6 +97,17 @@ EMAIL = {
     "destinataire": os.environ["GMAIL_DEST"],
 }
 
+def _num(v):
+    """Convertit v en float, ou renvoie None si la valeur est absente, NaN ou
+    infinie. Indispensable : float('nan') est *truthy*, donc un NaN traverse
+    tous les tests 'if prix' et contamine ensuite tous les totaux (le rapport
+    affiche alors 'nan EUR'). Tout ce qui vient de yfinance passe par ici."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
 def _close_n_days_ago(h, n):
     """Renvoie le cours de clôture le plus proche de (dernière date − n jours
     calendaires), en cherchant le dernier jour coté ≤ cette cible. Robuste aux
@@ -109,23 +120,66 @@ def _close_n_days_ago(h, n):
     # Toutes les séances à la date cible ou avant
     prior = closes[closes.index <= target]
     if len(prior) >= 1:
-        return float(prior.iloc[-1])
+        return _num(prior.iloc[-1])
     # Pas assez d'historique : on prend la plus ancienne dispo
-    return float(closes.iloc[0])
+    return _num(closes.iloc[0])
 
 def fetch_pea(portfolio):
     for p in portfolio:
         try:
             h = yf.Ticker(p["ticker"]).history(period="13mo")
-            p["prix"]   = float(h["Close"].iloc[-1]) if len(h) >= 1 else None
-            p["veille"] = float(h["Close"].iloc[-2]) if len(h) >= 2 else p["prix"]
+            # Yahoo publie la barre du jour AVANT la première cotation (avant
+            # l'ouverture, week-end, jour férié) : son Close vaut NaN. On la
+            # retire pour retomber sur la dernière séance réellement cotée.
+            if h is not None and len(h):
+                h = h[h["Close"].notna()]
+            p["prix"]   = _num(h["Close"].iloc[-1]) if len(h) >= 1 else None
+            p["veille"] = _num(h["Close"].iloc[-2]) if len(h) >= 2 else p["prix"]
             p["5d"]     = _close_n_days_ago(h, 7)  if len(h) >= 2 else None
             p["1mo"]    = _close_n_days_ago(h, 30) if len(h) >= 2 else None
             jan1 = h[h.index.year == datetime.now().year]
-            p["ytd"]    = float(jan1["Close"].iloc[0]) if len(jan1) >= 1 else None
+            p["ytd"]    = _num(jan1["Close"].iloc[0]) if len(jan1) >= 1 else None
+            # Date de la dernière séance cotée -> détection marché fermé
+            p["cotation"] = h.index[-1].date() if len(h) >= 1 else None
         except Exception:
             p["prix"] = p["veille"] = p["5d"] = p["1mo"] = p["ytd"] = None
+            p["cotation"] = None
     return portfolio
+
+def etat_marche(portfolio, now):
+    """Fraîcheur des cours. Renvoie (frais, derniere_cotation, motif).
+
+    'frais' est False quand la dernière séance cotée n'est pas celle du jour :
+    week-end, jour férié Euronext, ou rapport lancé avant l'ouverture. On prend
+    le max sur les positions pour qu'un seul ticker en retard ne déclenche pas
+    l'alerte à tort."""
+    dates = [p["cotation"] for p in portfolio if p.get("cotation")]
+    if not dates:
+        return False, None, "cours indisponibles"
+    last = max(dates)
+    if last >= now.date():
+        return True, last, ""
+    if now.weekday() >= 5:
+        motif = "week-end, Euronext est fermé"
+    elif now.hour < 9:
+        motif = "la séance du jour n'a pas encore ouvert"
+    else:
+        motif = "aucune cotation aujourd'hui (jour férié ou place fermée)"
+    return False, last, motif
+
+def bandeau_marche(portfolio, now):
+    """Bandeau HTML affiché quand les cours ne sont pas ceux du jour."""
+    frais, last, motif = etat_marche(portfolio, now)
+    if frais:
+        return ""
+    if last is None:
+        detail = "Cours indisponibles : les chiffres ci-dessous sont incomplets."
+    else:
+        detail = (f"Chiffres arrêtés à la clôture du {last.strftime('%d/%m/%Y')} ; "
+                  f"le P&amp;L du jour est celui de cette séance.")
+    return (f"<div class='nobrk' style='background:#fff8e6;border-bottom:1px solid #f1e3bd;"
+            f"padding:11px 22px;font-size:11.5px;line-height:1.5;color:#7a5a12'>"
+            f"<span style='font-weight:700'>Marché fermé</span> &middot; {motif}. {detail}</div>")
 
 def fetch_dividends(portfolio):
     """Prochaines dates de detachement de dividende (best effort via yfinance).
@@ -188,9 +242,12 @@ def fetch_marche():
     for nom, ticker in indices.items():
         try:
             h = yf.Ticker(ticker).history(period="5d")
+            if h is not None and len(h):
+                h = h[h["Close"].notna()]
             if len(h) >= 2:
-                cur, prev = float(h["Close"].iloc[-1]), float(h["Close"].iloc[-2])
-                result[nom] = {"val": cur, "pct": (cur - prev) / prev * 100}
+                cur, prev = _num(h["Close"].iloc[-1]), _num(h["Close"].iloc[-2])
+                result[nom] = ({"val": cur, "pct": (cur - prev) / prev * 100}
+                               if cur is not None and prev else None)
         except Exception:
             result[nom] = None
     return result
@@ -349,10 +406,8 @@ def load_history():
         for r in rows:
             for k in HISTORY_FIELDS:
                 if k != "date" and r.get(k) not in (None, ""):
-                    try:
-                        r[k] = float(r[k])
-                    except ValueError:
-                        r[k] = None
+                    # _num neutralise les 'nan' déjà présents dans le fichier
+                    r[k] = _num(r[k])
         rows.sort(key=lambda r: r.get("date", ""))
         return rows
     except Exception as e:
@@ -361,6 +416,12 @@ def load_history():
 
 def append_history(snapshot):
     """Ajoute (ou met à jour, upsert par date) un snapshot dans history.csv."""
+    invalides = [k for k in HISTORY_FIELDS
+                 if k != "date" and _num(snapshot.get(k)) is None]
+    if invalides:
+        print(f"[History] Snapshot {snapshot.get('date')} ignoré - "
+              f"valeur(s) non exploitable(s) : {', '.join(invalides)}", flush=True)
+        return load_history()
     try:
         rows = load_history()
         by_date = {r["date"]: r for r in rows}
@@ -472,35 +533,41 @@ def build_ath_html(history):
 
 
 def eur(v, sign=False):
+    v = _num(v)
     if v is None: return "N/A"
     s = "+" if sign and v > 0 else ""
     return f"{s}{v:,.0f}&nbsp;€".replace(",", "&nbsp;")
 
 def pct(v, sign=True):
+    v = _num(v)
     if v is None: return "N/A"
     s = "+" if sign and v > 0 else ""
     return f"{s}{v:.2f}".replace(".", ",") + "&nbsp;%"
 
 def col(v):
+    v = _num(v)
     if v is None or v == 0: return "#a0aec0"
     return "#0A6E46" if v > 0 else "#e07644"
 
 def fmt_index(v):
+    v = _num(v)
     if v is None: return "-"
     if v > 1000: return f"{v:,.0f}".replace(",", "&nbsp;")
     return f"{v:.4f}"
 
 def calc(p):
-    px, pru, qte = p["prix"], p["pru"], p["qte"]
+    px, pru, qte = _num(p.get("prix")), p["pru"], p["qte"]
     invest = qte * pru
     valo   = qte * px if px else None
     pl     = valo - invest if valo is not None else None
     pl_pct = pl / invest * 100 if pl is not None else None
-    jour   = qte * (px - p["veille"]) if px and p["veille"] else None
-    jour_p = (px - p["veille"]) / p["veille"] * 100 if px and p["veille"] else None
-    semaine = qte * (px - p["5d"])  if px and p["5d"]  else None
-    mois    = qte * (px - p["1mo"]) if px and p["1mo"] else None
-    ytd_pl  = qte * (px - p["ytd"]) if px and p["ytd"] else None
+    veille, s5d, m1, ytd = (_num(p.get("veille")), _num(p.get("5d")),
+                            _num(p.get("1mo")), _num(p.get("ytd")))
+    jour   = qte * (px - veille) if px and veille else None
+    jour_p = (px - veille) / veille * 100 if px and veille else None
+    semaine = qte * (px - s5d) if px and s5d else None
+    mois    = qte * (px - m1)  if px and m1  else None
+    ytd_pl  = qte * (px - ytd) if px and ytd else None
     return dict(invest=invest, valo=valo, pl=pl, pl_pct=pl_pct,
                 jour=jour, jour_p=jour_p, semaine=semaine, mois=mois, ytd_pl=ytd_pl)
 
@@ -1199,7 +1266,7 @@ def build_html(pf, pee_cfg, marche, now, commentary_html=None, history=None, set
              "}"
              "</style>")
 
-    body = (header + kpi + mkt_wrap + bw + contrib + periods + chart_html + ath_html + pos_table + stacked
+    body = (header + bandeau_marche(pf, now) + kpi + mkt_wrap + bw + contrib + periods + chart_html + ath_html + pos_table + stacked
             + divider + total_card + objectif + horizon + dividends_html + weekly + note + footer)
 
     return (f"<!DOCTYPE html><html lang='fr'><head><meta charset='UTF-8'>"
@@ -1283,6 +1350,11 @@ def build_text(pf, pee_cfg, marche, now, commentary_html=None):
     L.append("RAPPORT P&L - PEA + PEE" if has_pee else "RAPPORT P&L - PEA")
     L.append(f"{date_fr(now)} - {now.strftime('%H:%M')}")
     L.append("=" * 48)
+    frais_txt, last_txt, motif_txt = etat_marche(pf, now)
+    if not frais_txt:
+        L.append(f"MARCHE FERME - {motif_txt}.")
+        if last_txt:
+            L.append(f"Chiffres arretes a la cloture du {last_txt.strftime('%d/%m/%Y')}.")
     L.append("")
     L.append("PEA")
     L.append(f"  Valorisation : {e(tot_valo)}  (investi {e(tot_inv)})")
@@ -1389,6 +1461,7 @@ def run():
     tot_inv  = sum(c["invest"] for _, c in items)
     tot_valo = sum(c["valo"]   for _, c in items if c["valo"])
     tot_pl   = sum(c["pl"]     for _, c in items if c["pl"])
+    cotes    = sum(1 for _, c in items if c["valo"] is not None)
     if pee_active(PEE):
         pee_inv  = PEE["parts"] * PEE["pru"]
         pee_valo = PEE["parts"] * PEE["vl_last"]
@@ -1409,7 +1482,13 @@ def run():
         "total_pl":     round(total_pl, 2),
         "total_pl_pct": round(total_pl_pct, 2),
     }
-    history = append_history(snapshot)
+    if cotes:
+        history = append_history(snapshot)
+    else:
+        # Aucun cours récupéré : un point à 0 fausserait durablement la courbe
+        # d'évolution et l'ATH. On préfère un trou dans l'historique.
+        print("[History] Aucun cours disponible - snapshot non enregistré", flush=True)
+        history = load_history()
 
     # Note de marché : uniquement le vendredi
     commentary = None
